@@ -2767,7 +2767,7 @@ local function AutoPickup()
     end
 
     for Index, Value in next, workspace.placeFolders.items:GetChildren() do 
-        if (Value.Position - Hitbox.Position).Magnitude < 10000000000 then 
+        if (Value.Position - Hitbox.Position).Magnitude < 1000000 then 
             PickupItem(Value)
         end
     end
