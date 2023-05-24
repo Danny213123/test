@@ -2450,13 +2450,9 @@ Sections.LocalCheats:Toggle("Godmode", false, function(Value)
 end) 
 
 Sections.MiscRandom:Toggle("Anti Afk", true, function(Value)
-    for Index, IValue in next, getconnections(Player.Idled) do 
-        if Value then 
-            IValue:Disable() 
-        else
-            IValue:Enable()
-        end
-    end
+    for i,v in pairs(getconnections(game:GetService("Players").LocalPlayer.Idled)) do
+        v:Disable()
+     end
 
     if Settings.Announce then 
         if Value then 
@@ -2767,7 +2763,7 @@ local function AutoPickup()
     end
 
     for Index, Value in next, workspace.placeFolders.items:GetChildren() do 
-        if (Value.Position - Hitbox.Position).Magnitude < 1000000 then 
+        if (Value.Position - Hitbox.Position).Magnitude < 10000000000 then 
             PickupItem(Value)
         end
     end
