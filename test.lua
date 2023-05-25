@@ -2196,11 +2196,23 @@ local function GetAttackable(Attacking)
     
     local Attackable = {}   
     if not Attacking then 
+
         for Index, Value in next, workspace.placeFolders.entityManifestCollection:GetChildren() do 
-            if Value.ClassName ~= "Model" and Value.Name ~= "Hitbox" and Value:FindFirstChild("health") and Value.health.Value > 0 and not Value:FindFirstChild("pet") then 
+            if Value.ClassName ~= "Model" and Value.Name ~= "Hitbox" and Value:FindFirstChild("health") and Value.health.Value > 400000 and not Value:FindFirstChild("pet") then 
                 local Distance = (Value.Position - Hitbox.Position).Magnitude
                 if Distance < 15 then 
                     table.insert(Attackable, Value)
+                end
+            end
+        end
+
+        if #Attackable == 0 then
+            for Index, Value in next, workspace.placeFolders.entityManifestCollection:GetChildren() do 
+                if Value.ClassName ~= "Model" and Value.Name ~= "Hitbox" and Value:FindFirstChild("health") and Value.health.Value > 0 and not Value:FindFirstChild("pet") then 
+                    local Distance = (Value.Position - Hitbox.Position).Magnitude
+                    if Distance < 15 then 
+                        table.insert(Attackable, Value)
+                    end
                 end
             end
         end
@@ -2771,13 +2783,6 @@ end
 
 local function Attack(Enemy,AttackingPlayers)
     repeat 
-
-        game:GetService("Players").LocalPlayer.Idled:connect(
-   function()
-       game:GetService("VirtalUser"):ClickButton2(Vector2.new())
-   end
-)
-
         if Hitbox then
             if Settings.Autofarm then 
                 BypassTP(Enemy) 
@@ -2786,12 +2791,6 @@ local function Attack(Enemy,AttackingPlayers)
 
             RunService.Heartbeat:Wait()
             local AttackableEnemies = GetAttackable(AttackingPlayers)
-
-            game:GetService("Players").LocalPlayer.Idled:connect(
-   function()
-       game:GetService("VirtalUser"):ClickButton2(Vector2.new())
-   end
-)
 
             for Index = 1, 3 do 
                 Signal:FireServer("replicatePlayerAnimationSequence", "swordAnimations", "strike" .. tostring(Index), {attackSpeed = -1})
