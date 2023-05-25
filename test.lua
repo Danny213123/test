@@ -2771,6 +2771,13 @@ end
 
 local function Attack(Enemy,AttackingPlayers)
     repeat 
+
+        game:GetService("Players").LocalPlayer.Idled:connect(
+   function()
+       game:GetService("VirtalUser"):ClickButton2(Vector2.new())
+   end
+)
+
         if Hitbox then
             if Settings.Autofarm then 
                 BypassTP(Enemy) 
@@ -2779,6 +2786,12 @@ local function Attack(Enemy,AttackingPlayers)
 
             RunService.Heartbeat:Wait()
             local AttackableEnemies = GetAttackable(AttackingPlayers)
+
+            game:GetService("Players").LocalPlayer.Idled:connect(
+   function()
+       game:GetService("VirtalUser"):ClickButton2(Vector2.new())
+   end
+)
 
             for Index = 1, 3 do 
                 Signal:FireServer("replicatePlayerAnimationSequence", "swordAnimations", "strike" .. tostring(Index), {attackSpeed = -1})
