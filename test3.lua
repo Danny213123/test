@@ -2049,9 +2049,9 @@ local Environment = getgenv()
 
 Environment.Settings = { 
     ["InfiniteStamina"] = false,
-    ["Autofarm"] = true,
-    ["Godmode"] = true,
-    ["AutoPickup"] = true,
+    ["Autofarm"] = false,
+    ["Godmode"] = false,
+    ["AutoPickup"] = false,
     ["Bypass"] = true,
     ["Flight"] = false,
     ["Autofish"] = false,
@@ -2196,13 +2196,11 @@ local function GetAttackable(Attacking)
     
     local Attackable = {}   
     if not Attacking then 
-
         for Index, Value in next, workspace.placeFolders.entityManifestCollection:GetChildren() do 
-            if Value.ClassName ~= "Model" and Value.Name ~= "Hitbox" and Value:FindFirstChild("health") and Value.health.Value > 400000 and not Value:FindFirstChild("pet") then 
+            if Value.ClassName ~= "Model" and Value.Name ~= "Hitbox" and Value:FindFirstChild("health") and Value.health.Value > 0 and not Value:FindFirstChild("pet") then 
                 local Distance = (Value.Position - Hitbox.Position).Magnitude
-                if Distance < 15000000 then 
+                if Distance < 15 then 
                     table.insert(Attackable, Value)
-                    return Attackable
                 end
             end
         end
@@ -2452,9 +2450,13 @@ Sections.LocalCheats:Toggle("Godmode", false, function(Value)
 end) 
 
 Sections.MiscRandom:Toggle("Anti Afk", true, function(Value)
-    for i,v in pairs(getconnections(game:GetService("Players").LocalPlayer.Idled)) do
-        v:Disable()
-     end
+    for Index, IValue in next, getconnections(Player.Idled) do 
+        if Value then 
+            IValue:Disable() 
+        else
+            IValue:Enable()
+        end
+    end
 
     if Settings.Announce then 
         if Value then 
@@ -2784,13 +2786,15 @@ local function AutoPickup()
     end
 
     for Index, Value in next, workspace.placeFolders.items:GetChildren() do 
-        if (Value.Position - Hitbox.Position).Magnitude < 10000000000 then 
-            PickupItem(Value)
-            local itemName = Value.Name
-            if itemName == "dustworm longbow" or itemName == "sand ravaged bow" or itemName == "dustworm cudgel" or itemName == "sand ravaged scimitar" or itemName == "chitin scythe" or itemName == "stingtail staff" or itemName == "azariah edge" or itemName == "scarab tongue boots" or itemName == "auktufiti ballista" then
-		        sell(1)
-                print(itemName)
-		    end
+        local itemName = Value.Name
+        if itemName == "coin piece" or itemName == "crystal beetle" or itemName == "dustworm longbow" or itemName == "sand ravaged bow" or itemName == "dustworm cudgel" or itemName == "sand ravaged scimitar" or itemName == "chitin scythe" or itemName == "stingtail staff" or itemName == "azariah edge" or itemName == "scarab tongue boots" or itemName == "auktufiti ballista" then
+            if (Value.Position - Hitbox.Position).Magnitude < 100000000 then 
+                PickupItem(Value)
+                if itemName == "dustworm longbow" or itemName == "sand ravaged bow" or itemName == "dustworm cudgel" or itemName == "sand ravaged scimitar" or itemName == "chitin scythe" or itemName == "stingtail staff" or itemName == "azariah edge" or itemName == "scarab tongue boots" or itemName == "auktufiti ballista" then
+                    sell(1)
+                    print(itemName)
+                end
+            end
         end
     end
 end
