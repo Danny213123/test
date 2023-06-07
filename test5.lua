@@ -2787,7 +2787,7 @@ local function AutoPickup()
 
     for Index, Value in next, workspace.placeFolders.items:GetChildren() do 
         local itemName = Value.Name
-        if itemName == "coin piece" or itemName == "crystal beetle" or itemName == "megaphone" or itemName == "giant token" or itemName == "dustworm longbow" or itemName == "sand ravaged bow" or itemName == "dustworm cudgel" or itemName == "sand ravaged scimitar" or itemName == "chitin scythe" or itemName == "stingtail staff" or itemName == "azariah edge" or itemName == "scarab tongue boots" or itemName == "auktufiti ballista" then
+        if itemName == "coin piece" or itemName == "crystal beetle" or itemName == "megaphone" or itemName == "ancient weapon attack scroll dex" or itemName == "giant token" or itemName == "dustworm longbow" or itemName == "sand ravaged bow" or itemName == "dustworm cudgel" or itemName == "sand ravaged scimitar" or itemName == "chitin scythe" or itemName == "stingtail staff" or itemName == "azariah edge" or itemName == "scarab tongue boots" or itemName == "auktufiti ballista" then
             if (Value.Position - Hitbox.Position).Magnitude < 100000000 then 
                 PickupItem(Value)
                 if itemName == "dustworm longbow" or itemName == "sand ravaged bow" or itemName == "dustworm cudgel" or itemName == "sand ravaged scimitar" or itemName == "chitin scythe" or itemName == "stingtail staff" or itemName == "azariah edge" or itemName == "scarab tongue boots" or itemName == "auktufiti ballista" then
