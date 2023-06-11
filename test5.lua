@@ -2049,9 +2049,9 @@ local Environment = getgenv()
 
 Environment.Settings = { 
     ["InfiniteStamina"] = false,
-    ["Autofarm"] = false,
-    ["Godmode"] = false,
-    ["AutoPickup"] = false,
+    ["Autofarm"] = true,
+    ["Godmode"] = true,
+    ["AutoPickup"] = true,
     ["Bypass"] = true,
     ["Flight"] = false,
     ["Autofish"] = false,
