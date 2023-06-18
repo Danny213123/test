@@ -1,5 +1,3 @@
-repeat wait() until game:IsLoaded()
-
 local function teleport(id)
 	
 	local args = {
