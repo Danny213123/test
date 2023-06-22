@@ -3024,6 +3024,10 @@ local function peformance_3()
 
 end
 
+peformance_1()
+peformance_2()
+peformance_3()
+
 while RunService.Heartbeat:Wait() do
     if Settings.Autofarm or Settings.KillAura then 
         local Closest = GetClosest(Settings.AttackPlayers)
