@@ -3005,13 +3005,11 @@ local function peformance_3()
     
     local WindowFocusReleasedFunction = function()
         RunService:Set3dRenderingEnabled(false)
-        setfpscap(5)
         return
     end
     
     local WindowFocusedFunction = function()
         RunService:Set3dRenderingEnabled(true)
-        setfpscap(100)
         return
     end
     
