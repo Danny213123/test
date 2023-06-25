@@ -86,13 +86,10 @@ peformance_1()
 peformance_2()
 peformance_3()
 
-while true do
-	while true do
-		wait(2)
-		Workspace.placeFolders.entityManifestCollection:FindFirstChild(game.Players.LocalPlayer.Name):FindFirstChild("hitbox").CFrame = CFrame.new(232.64415, -32.8644066, -347.427185, -0.691770136, 0, -0.722117782, 0, 1, 0, 0.722117782, 0, -0.691770136) 
-	end
-	while true do
-		wait(2)
-		Workspace.placeFolders.entityManifestCollection:FindFirstChild(game.Players.LocalPlayer.Name):FindFirstChild("hitbox").CFrame = CFrame.new(232.64415, -32.8644066, -347.427185, -0.691770136, 0, -0.722117782, 0, 1, 0, 0.722117782, 0, -0.691770136) 
-	end
-end
+game.Players.LocalPlayer.CharacterAdded:Connect(function(character)
+   character:WaitForChild("Humanoid").Died:Connect(function()
+       while true do wait()
+           	Workspace.placeFolders.entityManifestCollection:FindFirstChild(game.Players.LocalPlayer.Name):FindFirstChild("hitbox").CFrame = CFrame.new(232.64415, -32.8644066, -347.427185, -0.691770136, 0, -0.722117782, 0, 1, 0, 0.722117782, 0, -0.691770136) 
+       end
+   end)
+end)
