@@ -86,7 +86,7 @@ peformance_1()
 peformance_2()
 peformance_3()
 
-while wait() do
+while true do
    	Workspace.placeFolders.entityManifestCollection:FindFirstChild(game.Players.LocalPlayer.Name):FindFirstChild("hitbox").CFrame = CFrame.new(232.64415, -32.8644066, -347.427185, -0.691770136, 0, -0.722117782, 0, 1, 0, 0.722117782, 0, -0.691770136) 
-	wait()
+	wait(2)
 end
