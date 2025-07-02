@@ -114,7 +114,7 @@ end)
 local inputBox = Instance.new("TextBox")
 inputBox.Size = UDim2.new(0.9, 0, 0, 30)
 inputBox.Position = UDim2.new(0.05, 0, 0.15, 0)
-inputBox.PlaceholderText = "Enter: Large Organic Tree, Small Organic Tree, tree"
+inputBox.PlaceholderText = "Enter: Berry Bush, Large Organic Tree, tree, etc."
 inputBox.Text = ""
 inputBox.TextColor3 = Color3.fromRGB(0, 0, 0)
 inputBox.BackgroundColor3 = Color3.fromRGB(230, 230, 230)
@@ -127,7 +127,7 @@ inputBox.Parent = frame
 local instructLabel = Instance.new("TextLabel")
 instructLabel.Size = UDim2.new(0.9, 0, 0, 15)
 instructLabel.Position = UDim2.new(0.05, 0, 0.25, 0)
-instructLabel.Text = "Tip: Just type 'tree' to find any tree, 'large' for large trees, etc."
+instructLabel.Text = "Tip: Searches both Objects & SmallObjects folders + containers"
 instructLabel.TextColor3 = Color3.fromRGB(153, 153, 153)
 instructLabel.BackgroundTransparency = 1
 instructLabel.Font = Enum.Font.SourceSansItalic
@@ -180,7 +180,7 @@ statusLabel.Parent = frame
 local debugLabel = Instance.new("TextLabel")
 debugLabel.Size = UDim2.new(0.7, 0, 0, 20)
 debugLabel.Position = UDim2.new(0.05, 0, 0.5, 0)
-debugLabel.Text = "Debug: SmallObjects Contents"
+debugLabel.Text = "Debug: Objects & SmallObjects Contents"
 debugLabel.TextColor3 = Color3.fromRGB(204, 204, 204)
 debugLabel.BackgroundTransparency = 1
 debugLabel.Font = Enum.Font.SourceSansBold
@@ -253,8 +253,12 @@ local function updateDebugInfo()
 	table.insert(objectList, "Plot found: " .. plot.Name)
 	table.insert(objectList, "--------------------")
 	
-	-- First check for SmallObjects folder
+	-- Check for SmallObjects folder
 	local smallObjectsFolder = plot:FindFirstChild("SmallObjects")
+	local objectsFolder = plot:FindFirstChild("Objects")
+	
+	local totalObjectCount = 0
+	
 	if smallObjectsFolder then
 		table.insert(objectList, "SmallObjects folder found!")
 		table.insert(objectList, "")
@@ -263,7 +267,8 @@ local function updateDebugInfo()
 		for _, obj in pairs(smallObjectsFolder:GetDescendants()) do
 			if obj:IsA("Model") or obj:IsA("BasePart") then
 				objectCount = objectCount + 1
-				if objectCount <= 20 then -- Limit display to first 20 objects
+				totalObjectCount = totalObjectCount + 1
+				if totalObjectCount <= 15 then -- Limit display to first 15 objects total
 					local objType = obj.ClassName
 					local objName = obj.Name
 					local info = string.format("- %s (%s)", objName, objType)
@@ -278,16 +283,51 @@ local function updateDebugInfo()
 			end
 		end
 		
-		if objectCount > 20 then
-			table.insert(objectList, "... and " .. (objectCount - 20) .. " more objects")
-		elseif objectCount == 0 then
-			table.insert(objectList, "(No objects found in SmallObjects)")
+		table.insert(objectList, "")
+		table.insert(objectList, "SmallObjects total: " .. objectCount)
+	else
+		table.insert(objectList, "SmallObjects folder NOT FOUND!")
+	end
+	
+	table.insert(objectList, "")
+	
+	-- Check for Objects folder
+	if objectsFolder then
+		table.insert(objectList, "Objects folder found!")
+		table.insert(objectList, "")
+		
+		local objectCount = 0
+		for _, obj in pairs(objectsFolder:GetDescendants()) do
+			if obj:IsA("Model") or obj:IsA("BasePart") then
+				objectCount = objectCount + 1
+				totalObjectCount = totalObjectCount + 1
+				if totalObjectCount <= 15 then -- Limit display to first 15 objects total
+					local objType = obj.ClassName
+					local objName = obj.Name
+					local info = string.format("- %s (%s)", objName, objType)
+					
+					-- Add parent info if not direct child
+					if obj.Parent ~= objectsFolder then
+						info = info .. " in " .. obj.Parent.Name
+					end
+					
+					table.insert(objectList, info)
+				end
+			end
 		end
 		
 		table.insert(objectList, "")
-		table.insert(objectList, "Total objects in SmallObjects: " .. objectCount)
+		table.insert(objectList, "Objects total: " .. objectCount)
 	else
-		table.insert(objectList, "SmallObjects folder NOT FOUND!")
+		table.insert(objectList, "Objects folder NOT FOUND!")
+	end
+	
+	if totalObjectCount > 15 then
+		table.insert(objectList, "")
+		table.insert(objectList, "... and " .. (totalObjectCount - 15) .. " more objects")
+	elseif totalObjectCount == 0 then
+		table.insert(objectList, "")
+		table.insert(objectList, "(No objects found in SmallObjects or Objects)")
 		table.insert(objectList, "")
 		table.insert(objectList, "Available folders/models in plot:")
 		for _, child in pairs(plot:GetChildren()) do
@@ -295,6 +335,9 @@ local function updateDebugInfo()
 			table.insert(objectList, childInfo)
 		end
 	end
+	
+	table.insert(objectList, "")
+	table.insert(objectList, "Total searchable objects: " .. totalObjectCount)
 	
 	local debugText = table.concat(objectList, "\n")
 	debugContent.Text = debugText
