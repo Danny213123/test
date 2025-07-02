@@ -138,7 +138,7 @@ instructLabel.Parent = frame
 local findButton = Instance.new("TextButton")
 findButton.Size = UDim2.new(0.4, 0, 0, 30)
 findButton.Position = UDim2.new(0.05, 0, 0.35, 0)
-findButton.Text = "Find & Walk"
+findButton.Text = "Auto Harvest"
 findButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 findButton.BackgroundColor3 = Color3.fromRGB(51, 153, 51)
 findButton.BorderSizePixel = 0
@@ -224,11 +224,15 @@ debugContent.TextYAlignment = Enum.TextYAlignment.Top
 debugContent.TextWrapped = true
 debugContent.Parent = debugScroll
 
--- Variables for pathfinding
+-- Variables for pathfinding and harvesting
 local currentPath = nil
 local currentWaypoint = 1
 local isWalking = false
 local pathConnection = nil
+local currentObjectList = {}
+local currentObjectIndex = 1
+local isHarvesting = false
+local UserInputService = game:GetService("UserInputService")
 
 -- Forward declare findPlayerPlot function
 local findPlayerPlot
@@ -369,8 +373,8 @@ findPlayerPlot = function()
 	return nil
 end
 
--- Function to find object in plot
-local function findObjectInPlot(plot, objectName)
+-- Function to find all objects in plot
+local function findAllObjectsInPlot(plot, objectName)
 	local foundObjects = {}
 	
 	-- Make search case-insensitive
@@ -424,12 +428,12 @@ local function findObjectInPlot(plot, objectName)
 					
 					if targetPart then
 						print("    Using part: " .. targetPart.Name .. " from model")
-						table.insert(foundObjects, targetPart)
+						table.insert(foundObjects, {part = targetPart, model = child})
 					else
 						print("    Warning: Model has no parts!")
 					end
 				else
-					table.insert(foundObjects, child)
+					table.insert(foundObjects, {part = child, model = child})
 				end
 			end
 		end
@@ -438,29 +442,28 @@ local function findObjectInPlot(plot, objectName)
 	print("Total found " .. #foundObjects .. " objects matching '" .. objectName .. "'")
 	
 	if #foundObjects > 0 then
-		-- Return the closest object
-		local closestObject = nil
-		local closestDistance = math.huge
+		-- Sort objects by distance from player
+		table.sort(foundObjects, function(a, b)
+			if a.part.Position and b.part.Position and rootPart and rootPart.Parent then
+				local distanceA = (a.part.Position - rootPart.Position).Magnitude
+				local distanceB = (b.part.Position - rootPart.Position).Magnitude
+				return distanceA < distanceB
+			end
+			return false
+		end)
 		
-		for _, obj in pairs(foundObjects) do
-			if obj.Position and rootPart and rootPart.Parent then
-				local distance = (obj.Position - rootPart.Position).Magnitude
-				if distance < closestDistance then
-					closestDistance = distance
-					closestObject = obj
-				end
+		print("Objects sorted by distance:")
+		for i, obj in pairs(foundObjects) do
+			if obj.part.Position and rootPart and rootPart.Parent then
+				local distance = (obj.part.Position - rootPart.Position).Magnitude
+				print("  " .. i .. ". " .. obj.model.Name .. " at distance: " .. distance)
 			end
 		end
 		
-		if closestObject then
-			print("Closest object is at distance: " .. closestDistance)
-			print("Full path: " .. closestObject:GetFullName())
-		end
-		
-		return closestObject
+		return foundObjects
 	end
 	
-	return nil
+	return {}
 end
 
 -- Function to create path
@@ -544,7 +547,6 @@ local function followPath()
 		if currentWaypoint > #waypoints then
 			-- Reached destination
 			isWalking = false
-			updateStatus("Reached destination!", Color3.fromRGB(51, 204, 51))
 			if pathConnection then
 				pathConnection:Disconnect()
 			end
@@ -553,6 +555,13 @@ local function followPath()
 			local existingParts = workspace:FindFirstChild("PathVisualization")
 			if existingParts then
 				existingParts:Destroy()
+			end
+			
+			-- Process the current object if we have a list
+			if currentObjectList and #currentObjectList > 0 then
+				processCurrentObject()
+			else
+				updateStatus("Reached destination!", Color3.fromRGB(51, 204, 51))
 			end
 			return
 		end
@@ -591,9 +600,166 @@ local function followPath()
 	end)
 end
 
--- Function to stop walking
+-- Function to interact with object (press E)
+local function interactWithObject()
+	print("Attempting to interact with object...")
+	updateStatus("Interacting with object...", Color3.fromRGB(204, 204, 51))
+	
+	-- Simulate pressing E key
+	local success = pcall(function()
+		UserInputService:GetService("VirtualInputManager"):SendKeyEvent(true, Enum.KeyCode.E, false, game)
+		wait(0.1)
+		UserInputService:GetService("VirtualInputManager"):SendKeyEvent(false, Enum.KeyCode.E, false, game)
+	end)
+	
+	if not success then
+		-- Alternative method - try to find and click interact button
+		local playerGui = player:FindFirstChild("PlayerGui")
+		if playerGui then
+			-- Look for common interact UI elements
+			for _, gui in pairs(playerGui:GetDescendants()) do
+				if gui:IsA("TextButton") and (gui.Text:lower():find("interact") or gui.Text:lower():find("e")) then
+					gui:Fire()
+					print("Found and clicked interact button")
+					break
+				end
+			end
+		end
+	end
+	
+	print("Interaction attempted")
+end
+
+-- Function to harvest object
+local function harvestObject()
+	print("Attempting to harvest object...")
+	updateStatus("Harvesting...", Color3.fromRGB(204, 204, 51))
+	
+	-- Wait a moment for interact to register
+	wait(0.5)
+	
+	-- Look for harvest button in GUI
+	local playerGui = player:FindFirstChild("PlayerGui")
+	if playerGui then
+		local harvestFound = false
+		for _, gui in pairs(playerGui:GetDescendants()) do
+			if gui:IsA("TextButton") and gui.Text:lower():find("harvest") then
+				gui.MouseButton1Click:Fire()
+				print("Found and clicked harvest button: " .. gui.Text)
+				harvestFound = true
+				break
+			end
+		end
+		
+		if not harvestFound then
+			print("Harvest button not found, trying alternative methods...")
+			-- Try clicking any button that might be a harvest button
+			for _, gui in pairs(playerGui:GetDescendants()) do
+				if gui:IsA("TextButton") and gui.Visible and gui.Text ~= "" then
+					local text = gui.Text:lower()
+					if text:find("take") or text:find("collect") or text:find("$") then
+						gui.MouseButton1Click:Fire()
+						print("Clicked potential harvest button: " .. gui.Text)
+						harvestFound = true
+						break
+					end
+				end
+			end
+		end
+	end
+	
+	print("Harvest attempted")
+end
+
+-- Function to wait for animation to complete
+local function waitForAnimation()
+	print("Waiting for animation to complete...")
+	updateStatus("Waiting for animation...", Color3.fromRGB(204, 204, 51))
+	
+	-- Monitor humanoid for animation
+	local animationStartTime = tick()
+	local maxWaitTime = 10 -- Maximum 10 seconds
+	
+	-- Wait for animation to start and finish
+	while tick() - animationStartTime < maxWaitTime do
+		-- Check if character is playing an animation
+		local isAnimating = false
+		for _, track in pairs(humanoid:GetPlayingAnimationTracks()) do
+			if track.IsPlaying then
+				isAnimating = true
+				break
+			end
+		end
+		
+		-- If no animation is playing after 2 seconds, assume it's done
+		if not isAnimating and tick() - animationStartTime > 2 then
+			break
+		end
+		
+		wait(0.1)
+	end
+	
+	-- Additional safety wait
+	wait(1)
+	print("Animation wait completed")
+end
+
+-- Function to process current object (interact + harvest)
+local function processCurrentObject()
+	if not currentObjectList or #currentObjectList == 0 then
+		return
+	end
+	
+	local currentObj = currentObjectList[currentObjectIndex]
+	if not currentObj then
+		return
+	end
+	
+	print("Processing object: " .. currentObj.model.Name)
+	updateStatus("Processing " .. currentObj.model.Name .. " (" .. currentObjectIndex .. "/" .. #currentObjectList .. ")", Color3.fromRGB(51, 204, 51))
+	
+	isHarvesting = true
+	
+	-- Step 1: Interact with object
+	interactWithObject()
+	
+	-- Step 2: Harvest the object
+	harvestObject()
+	
+	-- Step 3: Wait for animation
+	waitForAnimation()
+	
+	isHarvesting = false
+	
+	-- Move to next object
+	currentObjectIndex = currentObjectIndex + 1
+	
+	if currentObjectIndex <= #currentObjectList then
+		-- Go to next object
+		local nextObj = currentObjectList[currentObjectIndex]
+		print("Moving to next object: " .. nextObj.model.Name)
+		
+		-- Create path to next object
+		currentPath = createPath(nextObj.part.Position)
+		if currentPath then
+			isWalking = true
+			followPath()
+		else
+			updateStatus("Failed to create path to next object", Color3.fromRGB(255, 0, 0))
+		end
+	else
+		-- All objects processed
+		updateStatus("All objects processed! (" .. #currentObjectList .. " total)", Color3.fromRGB(51, 204, 51))
+		print("Finished processing all " .. #currentObjectList .. " objects")
+		currentObjectList = {}
+		currentObjectIndex = 1
+	end
+end
+
+-- Function to stop walking and harvesting
 local function stopWalking()
 	isWalking = false
+	isHarvesting = false
 	humanoid:MoveTo(rootPart.Position)
 	
 	if pathConnection then
@@ -606,6 +772,10 @@ local function stopWalking()
 	if existingParts then
 		existingParts:Destroy()
 	end
+	
+	-- Reset object list
+	currentObjectList = {}
+	currentObjectIndex = 1
 	
 	updateStatus("Stopped", Color3.fromRGB(204, 204, 204))
 end
@@ -640,9 +810,9 @@ findButton.MouseButton1Click:Connect(function()
 	
 	updateStatus("Searching for '" .. objectName .. "'...", Color3.fromRGB(204, 204, 51))
 	
-	-- Find object in plot
-	local targetObject = findObjectInPlot(plot, objectName)
-	if not targetObject then
+	-- Find ALL objects in plot
+	local foundObjects = findAllObjectsInPlot(plot, objectName)
+	if not foundObjects or #foundObjects == 0 then
 		updateStatus("Object '" .. objectName .. "' not found in your plot!", Color3.fromRGB(255, 128, 0))
 		-- Show what was searched
 		print("Searched for: " .. objectName)
@@ -650,14 +820,24 @@ findButton.MouseButton1Click:Connect(function()
 		return
 	end
 	
-	updateStatus("Found object! Creating path...", Color3.fromRGB(51, 204, 51))
-	print("Target object found: " .. targetObject.Name .. " at position " .. tostring(targetObject.Position))
+	-- Set up object list for processing
+	currentObjectList = foundObjects
+	currentObjectIndex = 1
 	
-	-- Create path to object
-	currentPath = createPath(targetObject.Position)
+	updateStatus("Found " .. #foundObjects .. " objects! Starting harvest...", Color3.fromRGB(51, 204, 51))
+	print("Found " .. #foundObjects .. " objects matching '" .. objectName .. "'")
+	
+	-- Start with first object
+	local firstObject = currentObjectList[1]
+	print("Starting with: " .. firstObject.model.Name .. " at position " .. tostring(firstObject.part.Position))
+	
+	-- Create path to first object
+	currentPath = createPath(firstObject.part.Position)
 	if currentPath then
 		isWalking = true
 		followPath()
+	else
+		updateStatus("Failed to create path to first object", Color3.fromRGB(255, 0, 0))
 	end
 end)
 
