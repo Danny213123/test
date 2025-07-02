@@ -110,24 +110,37 @@ titleLabel.InputChanged:Connect(function(input)
 	end
 end)
 
--- Input TextBox
+-- Object Input TextBox
 local inputBox = Instance.new("TextBox")
-inputBox.Size = UDim2.new(0.9, 0, 0, 30)
-inputBox.Position = UDim2.new(0.05, 0, 0.15, 0)
+inputBox.Size = UDim2.new(0.9, 0, 0, 25)
+inputBox.Position = UDim2.new(0.05, 0, 0.12, 0)
 inputBox.PlaceholderText = "Enter: Berry Bush, Large Organic Tree, tree, etc."
 inputBox.Text = ""
 inputBox.TextColor3 = Color3.fromRGB(0, 0, 0)
 inputBox.BackgroundColor3 = Color3.fromRGB(230, 230, 230)
 inputBox.BorderSizePixel = 1
 inputBox.Font = Enum.Font.SourceSans
-inputBox.TextSize = 14
+inputBox.TextSize = 12
 inputBox.Parent = frame
+
+-- Player Name Input TextBox
+local playerInputBox = Instance.new("TextBox")
+playerInputBox.Size = UDim2.new(0.9, 0, 0, 25)
+playerInputBox.Position = UDim2.new(0.05, 0, 0.19, 0)
+playerInputBox.PlaceholderText = "Player name (leave empty for your plot)"
+playerInputBox.Text = ""
+playerInputBox.TextColor3 = Color3.fromRGB(0, 0, 0)
+playerInputBox.BackgroundColor3 = Color3.fromRGB(230, 230, 230)
+playerInputBox.BorderSizePixel = 1
+playerInputBox.Font = Enum.Font.SourceSans
+playerInputBox.TextSize = 12
+playerInputBox.Parent = frame
 
 -- Instructions label
 local instructLabel = Instance.new("TextLabel")
 instructLabel.Size = UDim2.new(0.9, 0, 0, 15)
-instructLabel.Position = UDim2.new(0.05, 0, 0.25, 0)
-instructLabel.Text = "Tip: Searches everything in your entire plot"
+instructLabel.Position = UDim2.new(0.05, 0, 0.26, 0)
+instructLabel.Text = "Tip: Will visit all found objects in order"
 instructLabel.TextColor3 = Color3.fromRGB(153, 153, 153)
 instructLabel.BackgroundTransparency = 1
 instructLabel.Font = Enum.Font.SourceSansItalic
@@ -138,7 +151,7 @@ instructLabel.Parent = frame
 local findButton = Instance.new("TextButton")
 findButton.Size = UDim2.new(0.4, 0, 0, 30)
 findButton.Position = UDim2.new(0.05, 0, 0.35, 0)
-findButton.Text = "Auto Harvest"
+findButton.Text = "Find & Walk"
 findButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 findButton.BackgroundColor3 = Color3.fromRGB(51, 153, 51)
 findButton.BorderSizePixel = 0
@@ -315,7 +328,10 @@ local function updateDebugInfo()
 end
 
 -- Function to find player's plot
-findPlayerPlot = function()
+findPlayerPlot = function(targetPlayerName)
+	-- Use current player if no target specified
+	local searchPlayerName = targetPlayerName or player.Name
+	
 	-- Wait for Plots folder with timeout
 	local plotsFolder = workspace:WaitForChild("Plots", 5)
 	
@@ -336,11 +352,11 @@ findPlayerPlot = function()
 	
 	-- Try different plot naming conventions
 	local possibleNames = {
-		"Plot_" .. player.Name,
-		"Plot" .. player.Name,
-		player.Name .. "_Plot",
-		player.Name .. "Plot",
-		player.Name
+		"Plot_" .. searchPlayerName,
+		"Plot" .. searchPlayerName,
+		searchPlayerName .. "_Plot",
+		searchPlayerName .. "Plot",
+		searchPlayerName
 	}
 	
 	-- First try exact matches
@@ -358,14 +374,14 @@ findPlayerPlot = function()
 	
 	-- If exact match not found, try case-insensitive search
 	for _, child in pairs(plotsFolder:GetChildren()) do
-		if child.Name:lower():find(player.Name:lower()) then
+		if child.Name:lower():find(searchPlayerName:lower()) then
 			print("Found plot (case-insensitive): " .. child.Name)
 			return child
 		end
 	end
 	
-	updateStatus("Your plot not found! Tried: " .. table.concat(possibleNames, ", "), Color3.fromRGB(255, 0, 0))
-	print("Could not find plot for player: " .. player.Name)
+	updateStatus("Plot not found for " .. searchPlayerName .. "! Tried: " .. table.concat(possibleNames, ", "), Color3.fromRGB(255, 0, 0))
+	print("Could not find plot for player: " .. searchPlayerName)
 	print("Available plots in Plots folder:")
 	for _, child in pairs(plotsFolder:GetChildren()) do
 		print("  - " .. child.Name)
@@ -557,9 +573,128 @@ local function followPath()
 				existingParts:Destroy()
 			end
 			
-			-- Process the current object if we have a list
-			if currentObjectList and #currentObjectList > 0 then
-				processCurrentObject()
+			-- Check if we have more objects to visit
+			if currentObjectList and #currentObjectList > 0 and currentObjectIndex <= #currentObjectList then
+				local currentObj = currentObjectList[currentObjectIndex]
+				updateStatus("Reached " .. currentObj.model.Name .. " (" .. currentObjectIndex .. "/" .. #currentObjectList .. ")", Color3.fromRGB(51, 204, 51))
+				
+				-- Check if this is a berry bush and harvest it
+				if currentObj.model.Name:lower():find("berry bush") then
+					print("Found Berry Bush, attempting to harvest...")
+					updateStatus("Harvesting " .. currentObj.model.Name .. "...", Color3.fromRGB(204, 204, 51))
+					
+					local parent = currentObj.model.Parent
+					
+					-- Case 1: Berry bush is directly under House.Objects
+					if parent and parent.Name == "Objects" and parent.Parent and parent.Parent.Name == "House" then
+						print("Berry Bush is directly under House.Objects")
+						
+						-- Find the index of this berry bush in Objects
+						local objectsFolder = parent
+						local bushIndex = nil
+						for i, child in pairs(objectsFolder:GetChildren()) do
+							if child == currentObj.model then
+								bushIndex = i
+								break
+							end
+						end
+						
+						if bushIndex then
+							print("Berry Bush is child #" .. bushIndex .. " of Objects")
+							local success = pcall(function()
+								local Event = game:GetService("ReplicatedStorage").Modules.DataService:GetChildren()[9]:GetChildren()[21]
+								Event:FireServer({
+									Target = objectsFolder:GetChildren()[bushIndex],
+									Path = "6"
+								})
+								print("Fired harvest event for berry bush (index " .. bushIndex .. ")")
+							end)
+							if not success then
+								print("Failed to fire harvest event for berry bush")
+							end
+						else
+							print("Could not find berry bush index in Objects folder")
+						end
+					
+					-- Case 2: Berry bush is inside a Large Ordinary Planter
+					elseif parent and parent.Name == "ItemHolder" and parent.Parent and parent.Parent.Name:find("Large Ordinary Planter") then
+						print("Berry Bush is inside Large Ordinary Planter")
+						
+						local planter = parent.Parent
+						local objectsFolder = planter.Parent
+						
+						-- Check if planter is under House.Objects
+						if objectsFolder and objectsFolder.Name == "Objects" and objectsFolder.Parent and objectsFolder.Parent.Name == "House" then
+							print("Large Ordinary Planter is under House.Objects")
+							
+							-- Find the index of this berry bush in the ItemHolder
+							local itemHolder = parent
+							local bushIndex = nil
+							for i, child in pairs(itemHolder:GetChildren()) do
+								if child == currentObj.model then
+									bushIndex = i
+									break
+								end
+							end
+							
+							if bushIndex then
+								print("Berry Bush is child #" .. bushIndex .. " of ItemHolder")
+								local success = pcall(function()
+									local Event = game:GetService("ReplicatedStorage").Modules.DataService:GetChildren()[9]:GetChildren()[21]
+									Event:FireServer({
+										Target = itemHolder:GetChildren()[bushIndex],
+										Path = "6"
+									})
+									print("Fired harvest event for berry bush in planter (index " .. bushIndex .. ")")
+								end)
+								if not success then
+									print("Failed to fire harvest event for berry bush in planter")
+								end
+							else
+								print("Could not find berry bush index in ItemHolder")
+							end
+						else
+							print("Large Ordinary Planter is not under House.Objects")
+						end
+					
+					else
+						print("Berry Bush is not in a supported location, skipping harvest")
+						print("Parent: " .. (parent and parent.Name or "nil"))
+						print("Grandparent: " .. (parent and parent.Parent and parent.Parent.Name or "nil"))
+						print("Great-grandparent: " .. (parent and parent.Parent and parent.Parent.Parent and parent.Parent.Parent.Name or "nil"))
+					end
+					
+					-- Wait for harvest to complete
+					wait(2)
+				end
+				
+				-- Wait a moment at the object
+				wait(1)
+				
+				-- Move to next object
+				currentObjectIndex = currentObjectIndex + 1
+				
+				if currentObjectIndex <= #currentObjectList then
+					-- Go to next object
+					local nextObj = currentObjectList[currentObjectIndex]
+					print("Moving to next object: " .. nextObj.model.Name)
+					updateStatus("Walking to " .. nextObj.model.Name .. " (" .. currentObjectIndex .. "/" .. #currentObjectList .. ")", Color3.fromRGB(204, 204, 51))
+					
+					-- Create path to next object
+					currentPath = createPath(nextObj.part.Position)
+					if currentPath then
+						isWalking = true
+						followPath()
+					else
+						updateStatus("Failed to create path to next object", Color3.fromRGB(255, 0, 0))
+					end
+				else
+					-- All objects visited
+					updateStatus("All objects visited! (" .. (#currentObjectList) .. " total)", Color3.fromRGB(51, 204, 51))
+					print("Finished visiting all " .. #currentObjectList .. " objects")
+					currentObjectList = {}
+					currentObjectIndex = 1
+				end
 			else
 				updateStatus("Reached destination!", Color3.fromRGB(51, 204, 51))
 			end
@@ -609,187 +744,6 @@ local function followPath()
 	end)
 end
 
--- Function to interact with object (click on it)
-local function interactWithObject()
-	if not currentObjectList or #currentObjectList == 0 then
-		return
-	end
-	
-	local currentObj = currentObjectList[currentObjectIndex]
-	if not currentObj then
-		return
-	end
-	
-	print("Attempting to click on object: " .. currentObj.model.Name)
-	updateStatus("Clicking on " .. currentObj.model.Name .. "...", Color3.fromRGB(204, 204, 51))
-	
-	-- Wait a moment to ensure we're close to the object
-	wait(0.5)
-	
-	-- Try to click on the object using mouse simulation
-	local success = pcall(function()
-		-- Get the object's position on screen
-		local camera = workspace.CurrentCamera
-		local objectPosition = currentObj.part.Position
-		
-		-- Convert 3D position to screen position
-		local screenPoint, onScreen = camera:WorldToScreenPoint(objectPosition)
-		
-		if onScreen then
-			local vim = game:GetService('VirtualInputManager')
-			print("Clicking on object at screen position: " .. screenPoint.X .. ", " .. screenPoint.Y)
-			
-			-- Click on the object
-			vim:SendMouseButtonEvent(screenPoint.X, screenPoint.Y, 0, true, game, 0)
-			wait(0.1)
-			vim:SendMouseButtonEvent(screenPoint.X, screenPoint.Y, 0, false, game, 0)
-			
-			print("Clicked on object successfully")
-		else
-			print("Object not visible on screen")
-		end
-	end)
-	
-	if not success then
-		print("Mouse click failed, trying to use ClickDetector...")
-		-- Try to find and use ClickDetector
-		local clickDetector = currentObj.model:FindFirstChildOfClass("ClickDetector", true)
-		if clickDetector then
-			print("Found ClickDetector, firing click event")
-			fireclickdetector(clickDetector)
-		else
-			print("No ClickDetector found")
-		end
-	end
-	
-	print("Object interaction attempted")
-end
-
--- Function to harvest object
-local function harvestObject()
-	print("Attempting to harvest object...")
-	updateStatus("Harvesting...", Color3.fromRGB(204, 204, 51))
-	
-	-- Wait a moment for interact to register
-	wait(0.5)
-	
-	-- Look for harvest button in GUI
-	local playerGui = player:FindFirstChild("PlayerGui")
-	if playerGui then
-		local harvestFound = false
-		for _, gui in pairs(playerGui:GetDescendants()) do
-			if gui:IsA("TextButton") and gui.Text:lower():find("harvest") then
-				gui.MouseButton1Click:Fire()
-				print("Found and clicked harvest button: " .. gui.Text)
-				harvestFound = true
-				break
-			end
-		end
-		
-		if not harvestFound then
-			print("Harvest button not found, trying alternative methods...")
-			-- Try clicking any button that might be a harvest button
-			for _, gui in pairs(playerGui:GetDescendants()) do
-				if gui:IsA("TextButton") and gui.Visible and gui.Text ~= "" then
-					local text = gui.Text:lower()
-					if text:find("take") or text:find("collect") or text:find("$") then
-						gui.MouseButton1Click:Fire()
-						print("Clicked potential harvest button: " .. gui.Text)
-						harvestFound = true
-						break
-					end
-				end
-			end
-		end
-	end
-	
-	print("Harvest attempted")
-end
-
--- Function to wait for animation to complete
-local function waitForAnimation()
-	print("Waiting for animation to complete...")
-	updateStatus("Waiting for animation...", Color3.fromRGB(204, 204, 51))
-	
-	-- Monitor humanoid for animation
-	local animationStartTime = tick()
-	local maxWaitTime = 10 -- Maximum 10 seconds
-	
-	-- Wait for animation to start and finish
-	while tick() - animationStartTime < maxWaitTime do
-		-- Check if character is playing an animation
-		local isAnimating = false
-		for _, track in pairs(humanoid:GetPlayingAnimationTracks()) do
-			if track.IsPlaying then
-				isAnimating = true
-				break
-			end
-		end
-		
-		-- If no animation is playing after 2 seconds, assume it's done
-		if not isAnimating and tick() - animationStartTime > 2 then
-			break
-		end
-		
-		wait(0.1)
-	end
-	
-	-- Additional safety wait
-	wait(1)
-	print("Animation wait completed")
-end
-
--- Function to process current object (interact + harvest)
-local function processCurrentObject()
-	if not currentObjectList or #currentObjectList == 0 then
-		return
-	end
-	
-	local currentObj = currentObjectList[currentObjectIndex]
-	if not currentObj then
-		return
-	end
-	
-	print("Processing object: " .. currentObj.model.Name)
-	updateStatus("Processing " .. currentObj.model.Name .. " (" .. currentObjectIndex .. "/" .. #currentObjectList .. ")", Color3.fromRGB(51, 204, 51))
-	
-	isHarvesting = true
-	
-	-- Step 1: Interact with object
-	interactWithObject()
-	
-	-- Step 2: Harvest the object
-	harvestObject()
-	
-	-- Step 3: Wait for animation
-	waitForAnimation()
-	
-	isHarvesting = false
-	
-	-- Move to next object
-	currentObjectIndex = currentObjectIndex + 1
-	
-	if currentObjectIndex <= #currentObjectList then
-		-- Go to next object
-		local nextObj = currentObjectList[currentObjectIndex]
-		print("Moving to next object: " .. nextObj.model.Name)
-		
-		-- Create path to next object
-		currentPath = createPath(nextObj.part.Position)
-		if currentPath then
-			isWalking = true
-			followPath()
-		else
-			updateStatus("Failed to create path to next object", Color3.fromRGB(255, 0, 0))
-		end
-	else
-		-- All objects processed
-		updateStatus("All objects processed! (" .. #currentObjectList .. " total)", Color3.fromRGB(51, 204, 51))
-		print("Finished processing all " .. #currentObjectList .. " objects")
-		currentObjectList = {}
-		currentObjectIndex = 1
-	end
-end
 
 -- Function to stop walking and harvesting
 local function stopWalking()
@@ -837,8 +791,14 @@ findButton.MouseButton1Click:Connect(function()
 	-- Update debug info
 	updateDebugInfo()
 	
+	-- Get target player name (use current player if empty)
+	local targetPlayerName = playerInputBox.Text
+	if targetPlayerName == "" then
+		targetPlayerName = nil -- Will use current player
+	end
+	
 	-- Find player's plot
-	local plot = findPlayerPlot()
+	local plot = findPlayerPlot(targetPlayerName)
 	if not plot then
 		return
 	end
