@@ -612,24 +612,30 @@ end
 -- Function to interact with object (press E)
 local function interactWithObject()
 	print("Attempting to interact with object...")
-	updateStatus("Interacting with object...", Color3.fromRGB(204, 204, 51))
+	updateStatus("Attempting to Interact...", Color3.fromRGB(204, 204, 51))
 	
-	-- Simulate pressing E key
+	-- Wait a moment to ensure we're close to the object
+	wait(0.5)
+	
+	-- Simulate pressing E key using VirtualInputManager
 	local success = pcall(function()
-		UserInputService:GetService("VirtualInputManager"):SendKeyEvent(true, Enum.KeyCode.E, false, game)
+		local vim = game:GetService('VirtualInputManager')
+		vim:SendKeyEvent(true, Enum.KeyCode.E, false, game)
 		wait(0.1)
-		UserInputService:GetService("VirtualInputManager"):SendKeyEvent(false, Enum.KeyCode.E, false, game)
+		vim:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+		print("Sent E key press via VirtualInputManager")
 	end)
 	
 	if not success then
+		print("VirtualInputManager failed, trying alternative methods...")
 		-- Alternative method - try to find and click interact button
 		local playerGui = player:FindFirstChild("PlayerGui")
 		if playerGui then
 			-- Look for common interact UI elements
 			for _, gui in pairs(playerGui:GetDescendants()) do
 				if gui:IsA("TextButton") and (gui.Text:lower():find("interact") or gui.Text:lower():find("e")) then
-					gui:Fire()
-					print("Found and clicked interact button")
+					gui.MouseButton1Click:Fire()
+					print("Found and clicked interact button: " .. gui.Text)
 					break
 				end
 			end
