@@ -609,40 +609,60 @@ local function followPath()
 	end)
 end
 
--- Function to interact with object (press E)
+-- Function to interact with object (click on it)
 local function interactWithObject()
-	print("Attempting to interact with object...")
-	updateStatus("Attempting to Interact...", Color3.fromRGB(204, 204, 51))
+	if not currentObjectList or #currentObjectList == 0 then
+		return
+	end
+	
+	local currentObj = currentObjectList[currentObjectIndex]
+	if not currentObj then
+		return
+	end
+	
+	print("Attempting to click on object: " .. currentObj.model.Name)
+	updateStatus("Clicking on " .. currentObj.model.Name .. "...", Color3.fromRGB(204, 204, 51))
 	
 	-- Wait a moment to ensure we're close to the object
 	wait(0.5)
 	
-	-- Simulate pressing E key using VirtualInputManager
+	-- Try to click on the object using mouse simulation
 	local success = pcall(function()
-		local vim = game:GetService('VirtualInputManager')
-		vim:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-		wait(0.1)
-		vim:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-		print("Sent E key press via VirtualInputManager")
+		-- Get the object's position on screen
+		local camera = workspace.CurrentCamera
+		local objectPosition = currentObj.part.Position
+		
+		-- Convert 3D position to screen position
+		local screenPoint, onScreen = camera:WorldToScreenPoint(objectPosition)
+		
+		if onScreen then
+			local vim = game:GetService('VirtualInputManager')
+			print("Clicking on object at screen position: " .. screenPoint.X .. ", " .. screenPoint.Y)
+			
+			-- Click on the object
+			vim:SendMouseButtonEvent(screenPoint.X, screenPoint.Y, 0, true, game, 0)
+			wait(0.1)
+			vim:SendMouseButtonEvent(screenPoint.X, screenPoint.Y, 0, false, game, 0)
+			
+			print("Clicked on object successfully")
+		else
+			print("Object not visible on screen")
+		end
 	end)
 	
 	if not success then
-		print("VirtualInputManager failed, trying alternative methods...")
-		-- Alternative method - try to find and click interact button
-		local playerGui = player:FindFirstChild("PlayerGui")
-		if playerGui then
-			-- Look for common interact UI elements
-			for _, gui in pairs(playerGui:GetDescendants()) do
-				if gui:IsA("TextButton") and (gui.Text:lower():find("interact") or gui.Text:lower():find("e")) then
-					gui.MouseButton1Click:Fire()
-					print("Found and clicked interact button: " .. gui.Text)
-					break
-				end
-			end
+		print("Mouse click failed, trying to use ClickDetector...")
+		-- Try to find and use ClickDetector
+		local clickDetector = currentObj.model:FindFirstChildOfClass("ClickDetector", true)
+		if clickDetector then
+			print("Found ClickDetector, firing click event")
+			fireclickdetector(clickDetector)
+		else
+			print("No ClickDetector found")
 		end
 	end
 	
-	print("Interaction attempted")
+	print("Object interaction attempted")
 end
 
 -- Function to harvest object
