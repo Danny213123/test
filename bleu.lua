@@ -566,6 +566,14 @@ local function followPath()
 			return
 		end
 		
+		-- Ensure waypoint index is valid
+		if currentWaypoint < 1 then
+			currentWaypoint = 1
+		end
+		if currentWaypoint > #waypoints then
+			currentWaypoint = #waypoints
+		end
+		
 		local waypoint = waypoints[currentWaypoint]
 		local distance = (waypoint.Position - rootPart.Position).Magnitude
 		
@@ -586,17 +594,18 @@ local function followPath()
 		if currentWaypoint == lastWaypoint then
 			stuckTime = stuckTime + 0.03 -- approximate heartbeat time
 			if stuckTime > 3 then -- 3 seconds timeout
+				print("Stuck on waypoint " .. currentWaypoint .. ", skipping...")
 				currentWaypoint = currentWaypoint + 1
 				stuckTime = 0
-				print("Skipped stuck waypoint " .. (currentWaypoint - 1))
 			end
 		else
 			lastWaypoint = currentWaypoint
 			stuckTime = 0
 		end
 		
-		-- Update status
-		updateStatus("Walking... Waypoint " .. currentWaypoint .. "/" .. #waypoints, Color3.fromRGB(204, 204, 51))
+		-- Update status with proper bounds checking
+		local displayWaypoint = math.min(currentWaypoint, #waypoints)
+		updateStatus("Walking... Waypoint " .. displayWaypoint .. "/" .. #waypoints, Color3.fromRGB(204, 204, 51))
 	end)
 end
 
