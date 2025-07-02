@@ -376,66 +376,64 @@ local function findObjectInPlot(plot, objectName)
 	-- Make search case-insensitive
 	local searchName = objectName:lower()
 	
-	local function searchDescendants(parent)
-		print("Searching in: " .. parent:GetFullName())
-		for _, child in pairs(parent:GetDescendants()) do
-			-- Check if it's a part or model and if name matches (case-insensitive, partial match)
-			if (child:IsA("BasePart") or child:IsA("Model")) then
-				-- Special handling for "tree" search to match any tree type
-				local isTreeSearch = searchName == "tree" or searchName == "trees"
-				local matchFound = false
-				
-				if isTreeSearch and (child.Name:lower():find("tree", 1, true) or 
-					(child.Parent and child.Parent.Name:lower():find("tree", 1, true))) then
-					matchFound = true
-				elseif child.Name:lower():find(searchName, 1, true) then
-					matchFound = true
-				end
-				
-				if matchFound then
-					print("  Found matching object: " .. child.Name .. " (" .. child.ClassName .. ")")
-					-- For models, try to find a primary part or any part inside
-					if child:IsA("Model") then
-						local targetPart = nil
-						
-						-- First try PrimaryPart
-						if child.PrimaryPart then
-							targetPart = child.PrimaryPart
-							print("    Found PrimaryPart: " .. targetPart.Name)
+	print("Searching entire plot recursively for: " .. objectName)
+	print("Plot: " .. plot:GetFullName())
+	
+	-- Search through ALL descendants of the plot recursively
+	for _, child in pairs(plot:GetDescendants()) do
+		-- Check if it's a part or model and if name matches (case-insensitive, partial match)
+		if (child:IsA("BasePart") or child:IsA("Model")) then
+			-- Special handling for "tree" search to match any tree type
+			local isTreeSearch = searchName == "tree" or searchName == "trees"
+			local matchFound = false
+			
+			if isTreeSearch and (child.Name:lower():find("tree", 1, true) or 
+				(child.Parent and child.Parent.Name:lower():find("tree", 1, true))) then
+				matchFound = true
+			elseif child.Name:lower():find(searchName, 1, true) then
+				matchFound = true
+			end
+			
+			if matchFound then
+				print("  Found matching object: " .. child.Name .. " (" .. child.ClassName .. ") at " .. child:GetFullName())
+				-- For models, try to find a primary part or any part inside
+				if child:IsA("Model") then
+					local targetPart = nil
+					
+					-- First try PrimaryPart
+					if child.PrimaryPart then
+						targetPart = child.PrimaryPart
+						print("    Found PrimaryPart: " .. targetPart.Name)
+					else
+						-- Try to set PrimaryPart if not set
+						local firstPart = child:FindFirstChildWhichIsA("BasePart", true)
+						if firstPart then
+							targetPart = firstPart
+							print("    Found first part: " .. firstPart.Name)
 						else
-							-- Try to set PrimaryPart if not set
-							local firstPart = child:FindFirstChildWhichIsA("BasePart", true)
-							if firstPart then
-								targetPart = firstPart
-								print("    Found first part: " .. firstPart.Name)
-							else
-								-- Find any BasePart descendant
-								for _, desc in pairs(child:GetDescendants()) do
-									if desc:IsA("BasePart") then
-										targetPart = desc
-										print("    Found descendant part: " .. desc.Name)
-										break
-									end
+							-- Find any BasePart descendant
+							for _, desc in pairs(child:GetDescendants()) do
+								if desc:IsA("BasePart") then
+									targetPart = desc
+									print("    Found descendant part: " .. desc.Name)
+									break
 								end
 							end
 						end
-						
-						if targetPart then
-							print("    Using part: " .. targetPart.Name .. " from model")
-							table.insert(foundObjects, targetPart)
-						else
-							print("    Warning: Model has no parts!")
-						end
-					else
-						table.insert(foundObjects, child)
 					end
+					
+					if targetPart then
+						print("    Using part: " .. targetPart.Name .. " from model")
+						table.insert(foundObjects, targetPart)
+					else
+						print("    Warning: Model has no parts!")
+					end
+				else
+					table.insert(foundObjects, child)
 				end
 			end
 		end
 	end
-	
-	-- Search entire plot
-	searchDescendants(plot)
 	
 	print("Total found " .. #foundObjects .. " objects matching '" .. objectName .. "'")
 	
@@ -456,6 +454,7 @@ local function findObjectInPlot(plot, objectName)
 		
 		if closestObject then
 			print("Closest object is at distance: " .. closestDistance)
+			print("Full path: " .. closestObject:GetFullName())
 		end
 		
 		return closestObject
