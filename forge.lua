@@ -1,4 +1,4 @@
--- Rocks Scanner (Ultimate: Realistic Jump + Animations + Safety)
+-- Rocks Scanner (Legit Mode Default + Path Visuals + No Sinking)
 -- TYPE: LocalScript
 -- LOCATION: StarterPlayer -> StarterPlayerScripts
 
@@ -16,20 +16,21 @@ local playerGui = player:WaitForChild("PlayerGui")
 -- CONFIGURATION
 -- =========================================================================
 local autoMineEnabled = false
-local stealthModeEnabled = true 
+local stealthModeEnabled = false -- [[ CHANGED: Default is now LEGIT (Surface) ]]
+local strictAvoidance = true 
 local espEnabled = false
 local isCurrentlyMining = false 
 local selectedTargets = {} 
 
--- Safety & Travel Settings
-local MIN_PLAYER_DISTANCE = 70  -- Skip rocks if players are this close
-local TRAVEL_DEPTH = 20         -- Depth to travel underground (Stealth Travel)
-local HIDE_OFFSET = 3           -- Depth to sink into ground while mining (Mob Safety)
-local MOVEMENT_SPEED = 35       -- Studs per second (Stealth Mode)
+-- Settings
+local SIGHT_DISTANCE = 150      
+local TRAVEL_DEPTH = 20         
+local MINING_DEPTH = 12         
+local MOVEMENT_SPEED = 35       
 
--- Pathfinding Settings (Surface Mode)
+-- Pathfinding
 local STUCK_TIMEOUT = 2       
-local JUMP_THRESHOLD = 2.0      -- Height difference to trigger jump
+local JUMP_THRESHOLD = 2.0 
 
 -- Visuals
 local visualFolder = workspace:FindFirstChild("PathVisuals") or Instance.new("Folder")
@@ -43,6 +44,7 @@ espFolder.Parent = CoreGui
 -- Animation Tracks
 local walkAnimTrack = nil
 local jumpAnimTrack = nil
+local noclipConnection = nil
 
 -- =========================================================================
 -- GUI SETUP
@@ -54,9 +56,9 @@ screenGui.Parent = playerGui
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.new(0, 350, 0, 500)
-mainFrame.Position = UDim2.new(0.5, -175, 0.5, -250)
-mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+mainFrame.Size = UDim2.new(0, 350, 0, 550)
+mainFrame.Position = UDim2.new(0.5, -175, 0.5, -275)
+mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 mainFrame.BorderSizePixel = 0
 mainFrame.Parent = screenGui
 Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
@@ -64,12 +66,12 @@ Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
 -- Header
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 40)
-titleBar.BackgroundColor3 = Color3.fromRGB(255, 170, 0)
+titleBar.BackgroundColor3 = Color3.fromRGB(0, 120, 255) -- Blue for Legit/Default
 titleBar.Parent = mainFrame
 Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
 
 local titleLabel = Instance.new("TextLabel")
-titleLabel.Text = "Realistic Miner"
+titleLabel.Text = "Legit Miner"
 titleLabel.Size = UDim2.new(1, -50, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
@@ -91,13 +93,13 @@ Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
 
 -- CONTROLS
 local controlsFrame = Instance.new("Frame")
-controlsFrame.Size = UDim2.new(1, -20, 0, 80)
+controlsFrame.Size = UDim2.new(1, -20, 0, 120)
 controlsFrame.Position = UDim2.new(0, 10, 0, 50)
-controlsFrame.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+controlsFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 controlsFrame.Parent = mainFrame
 Instance.new("UICorner", controlsFrame).CornerRadius = UDim.new(0, 6)
 
--- Auto Mine
+-- 1. Auto Mine
 local autoMineButton = Instance.new("TextButton")
 autoMineButton.Size = UDim2.new(0, 24, 0, 24)
 autoMineButton.Position = UDim2.new(0, 10, 0, 10)
@@ -116,11 +118,11 @@ autoMineLabel.Font = Enum.Font.GothamBold
 autoMineLabel.TextXAlignment = Enum.TextXAlignment.Left
 autoMineLabel.Parent = controlsFrame
 
--- Stealth
+-- 2. Stealth
 local stealthButton = Instance.new("TextButton")
 stealthButton.Size = UDim2.new(0, 24, 0, 24)
 stealthButton.Position = UDim2.new(0, 10, 0, 45)
-stealthButton.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+stealthButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80) -- Default Off
 stealthButton.Text = ""
 stealthButton.Parent = controlsFrame
 Instance.new("UICorner", stealthButton).CornerRadius = UDim.new(0, 4)
@@ -135,10 +137,29 @@ stealthLabel.Font = Enum.Font.Gotham
 stealthLabel.TextXAlignment = Enum.TextXAlignment.Left
 stealthLabel.Parent = controlsFrame
 
--- ESP
+-- 3. Strict Avoidance
+local strictButton = Instance.new("TextButton")
+strictButton.Size = UDim2.new(0, 24, 0, 24)
+strictButton.Position = UDim2.new(0, 10, 0, 80)
+strictButton.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+strictButton.Text = ""
+strictButton.Parent = controlsFrame
+Instance.new("UICorner", strictButton).CornerRadius = UDim.new(0, 4)
+
+local strictLabel = Instance.new("TextLabel")
+strictLabel.Text = "STRICT AVOIDANCE"
+strictLabel.Size = UDim2.new(0, 200, 0, 24)
+strictLabel.Position = UDim2.new(0, 40, 0, 80)
+strictLabel.BackgroundTransparency = 1
+strictLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+strictLabel.Font = Enum.Font.Gotham
+strictLabel.TextXAlignment = Enum.TextXAlignment.Left
+strictLabel.Parent = controlsFrame
+
+-- 4. ESP
 local espButton = Instance.new("TextButton")
 espButton.Size = UDim2.new(0, 24, 0, 24)
-espButton.Position = UDim2.new(0, 180, 0, 45)
+espButton.Position = UDim2.new(0, 180, 0, 10)
 espButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
 espButton.Text = ""
 espButton.Parent = controlsFrame
@@ -147,7 +168,7 @@ Instance.new("UICorner", espButton).CornerRadius = UDim.new(0, 4)
 local espLabel = Instance.new("TextLabel")
 espLabel.Text = "PLAYER ESP"
 espLabel.Size = UDim2.new(0, 100, 0, 24)
-espLabel.Position = UDim2.new(0, 210, 0, 45)
+espLabel.Position = UDim2.new(0, 210, 0, 10)
 espLabel.BackgroundTransparency = 1
 espLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
 espLabel.Font = Enum.Font.Gotham
@@ -167,8 +188,8 @@ Instance.new("UICorner", refreshBtn).CornerRadius = UDim.new(0, 4)
 
 -- Scroll
 local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Size = UDim2.new(1, -20, 1, -150)
-scrollFrame.Position = UDim2.new(0, 10, 0, 140)
+scrollFrame.Size = UDim2.new(1, -20, 1, -180)
+scrollFrame.Position = UDim2.new(0, 10, 0, 180)
 scrollFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 scrollFrame.ScrollBarThickness = 6
 scrollFrame.Parent = mainFrame
@@ -190,23 +211,46 @@ statusLabel.TextSize = 12
 statusLabel.Parent = mainFrame
 
 -- =========================================================================
--- ANIMATION HELPERS
+-- PHYSICS & REPLICATION HELPERS
 -- =========================================================================
-
-local function getWalkAnimId(humanoid)
-	return (humanoid.RigType == Enum.HumanoidRigType.R15) and "rbxassetid://507767714" or "rbxassetid://180426354"
+local function enableFlightPhysics(rootPart)
+	local bv = rootPart:FindFirstChild("HoldVelocity") or Instance.new("BodyVelocity")
+	bv.Name = "HoldVelocity"
+	bv.Velocity = Vector3.new(0,0,0)
+	bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+	bv.Parent = rootPart
+	
+	if noclipConnection then noclipConnection:Disconnect() end
+	noclipConnection = RunService.Stepped:Connect(function()
+		if player.Character then
+			for _, part in pairs(player.Character:GetDescendants()) do
+				if part:IsA("BasePart") and part.CanCollide then
+					part.CanCollide = false
+				end
+			end
+		end
+	end)
 end
 
-local function getJumpAnimId(humanoid)
-	return (humanoid.RigType == Enum.HumanoidRigType.R15) and "rbxassetid://507765000" or "rbxassetid://125750702"
+local function disableFlightPhysics(rootPart)
+	local bv = rootPart:FindFirstChild("HoldVelocity")
+	if bv then bv:Destroy() end
+	if noclipConnection then 
+		noclipConnection:Disconnect() 
+		noclipConnection = nil
+	end
 end
+
+-- =========================================================================
+-- ANIMATIONS
+-- =========================================================================
+local function getWalkAnimId(humanoid) return (humanoid.RigType == Enum.HumanoidRigType.R15) and "rbxassetid://507767714" or "rbxassetid://180426354" end
+local function getJumpAnimId(humanoid) return (humanoid.RigType == Enum.HumanoidRigType.R15) and "rbxassetid://507765000" or "rbxassetid://125750702" end
 
 local function playWalkAnim(humanoid)
 	if walkAnimTrack and walkAnimTrack.IsPlaying then return end
-	
-	local animator = humanoid:FindFirstChildOfClass("Animator")
+	local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator", 1)
 	if not animator then return end
-	
 	if not walkAnimTrack then
 		local anim = Instance.new("Animation")
 		anim.AnimationId = getWalkAnimId(humanoid)
@@ -216,15 +260,10 @@ local function playWalkAnim(humanoid)
 	end
 	walkAnimTrack:Play()
 end
-
-local function stopWalkAnim()
-	if walkAnimTrack then walkAnimTrack:Stop() end
-end
-
+local function stopWalkAnim() if walkAnimTrack then walkAnimTrack:Stop() end end
 local function playJumpAnim(humanoid)
 	local animator = humanoid:FindFirstChildOfClass("Animator")
 	if not animator then return end
-	
 	if not jumpAnimTrack then
 		local anim = Instance.new("Animation")
 		anim.AnimationId = getJumpAnimId(humanoid)
@@ -236,9 +275,8 @@ local function playJumpAnim(humanoid)
 end
 
 -- =========================================================================
--- ESP & GUI LOGIC
+-- GUI LOGIC
 -- =========================================================================
-
 local function updateESP()
 	espFolder:ClearAllChildren()
 	if espEnabled then
@@ -255,11 +293,9 @@ local function updateESP()
 		end
 	end
 end
-
 Players.PlayerAdded:Connect(function() task.wait(1) updateESP() end)
 Players.PlayerRemoving:Connect(updateESP)
 task.spawn(function() while true do task.wait(5) if espEnabled then updateESP() end end end)
-
 espButton.MouseButton1Click:Connect(function()
 	espEnabled = not espEnabled
 	espButton.BackgroundColor3 = espEnabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(80, 80, 80)
@@ -279,7 +315,7 @@ local function updateAutoMineVisuals()
 		visualFolder:ClearAllChildren()
 		stopWalkAnim()
 		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-			player.Character.HumanoidRootPart.Anchored = false
+			disableFlightPhysics(player.Character.HumanoidRootPart)
 		end
 	end
 end
@@ -294,6 +330,11 @@ stealthButton.MouseButton1Click:Connect(function()
 	stealthButton.BackgroundColor3 = stealthModeEnabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(80, 80, 80)
 end)
 
+strictButton.MouseButton1Click:Connect(function()
+	strictAvoidance = not strictAvoidance
+	strictButton.BackgroundColor3 = strictAvoidance and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(80, 80, 80)
+end)
+
 local function createRow(itemName, count)
 	local row = Instance.new("Frame")
 	row.Name = itemName
@@ -301,7 +342,6 @@ local function createRow(itemName, count)
 	row.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
 	row.Parent = scrollFrame
 	Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
-	
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.Text = itemName .. " (x" .. count .. ")"
 	nameLabel.Size = UDim2.new(0.7, 0, 1, 0)
@@ -311,7 +351,6 @@ local function createRow(itemName, count)
 	nameLabel.Font = Enum.Font.GothamBold
 	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 	nameLabel.Parent = row
-	
 	local checkBg = Instance.new("TextButton")
 	checkBg.Size = UDim2.new(0, 24, 0, 24)
 	checkBg.Position = UDim2.new(1, -34, 0.5, -12)
@@ -319,7 +358,6 @@ local function createRow(itemName, count)
 	checkBg.Text = ""
 	checkBg.Parent = row
 	Instance.new("UICorner", checkBg).CornerRadius = UDim.new(0, 4)
-	
 	local checkMark = Instance.new("Frame")
 	checkMark.Size = UDim2.new(0, 14, 0, 14)
 	checkMark.Position = UDim2.new(0.5, -7, 0.5, -7)
@@ -327,7 +365,6 @@ local function createRow(itemName, count)
 	checkMark.Visible = selectedTargets[itemName] or false
 	checkMark.Parent = checkBg
 	Instance.new("UICorner", checkMark).CornerRadius = UDim.new(0, 2)
-	
 	checkBg.MouseButton1Click:Connect(function()
 		local newState = not checkMark.Visible
 		checkMark.Visible = newState
@@ -360,22 +397,36 @@ local function scanRocks()
 end
 
 -- =========================================================================
--- LOGIC HELPERS
+-- STRICT AVOIDANCE & RAYCASTING
 -- =========================================================================
-
-local function isAreaSafe(targetPos)
+local function isSpotterNearby(targetPos)
 	for _, otherPlayer in ipairs(Players:GetPlayers()) do
-		if otherPlayer ~= player and otherPlayer.Character and otherPlayer.Character:FindFirstChild("HumanoidRootPart") then
-			local dist = (otherPlayer.Character.HumanoidRootPart.Position - targetPos).Magnitude
-			if dist < MIN_PLAYER_DISTANCE then
-				return false
+		if otherPlayer ~= player and otherPlayer.Character then
+			local head = otherPlayer.Character:FindFirstChild("Head")
+			if head then
+				local origin = head.Position
+				local directionVector = (targetPos - origin)
+				local dist = directionVector.Magnitude
+				if dist < SIGHT_DISTANCE then
+					local rayParams = RaycastParams.new()
+					rayParams.FilterDescendantsInstances = {player.Character, otherPlayer.Character}
+					rayParams.FilterType = Enum.RaycastFilterType.Exclude
+					local result = workspace:Raycast(origin, directionVector, rayParams)
+					if not result or (result.Position - targetPos).Magnitude < 5 then 
+						return true 
+					end
+				end
 			end
 		end
 	end
-	return true
+	return false 
 end
 
--- PATHFINDING VISUALS
+-- =========================================================================
+-- MOVEMENT FUNCTIONS
+-- =========================================================================
+
+-- [[ ADDED: PATH VISUALIZATION FOR LEGIT MODE ]] --
 local function showPath(waypoints)
 	visualFolder:ClearAllChildren()
 	for _, waypoint in ipairs(waypoints) do
@@ -386,7 +437,8 @@ local function showPath(waypoints)
 		dot.Anchored = true
 		dot.CanCollide = false
 		dot.Material = Enum.Material.Neon
-		dot.Color = Color3.fromRGB(160, 50, 255)
+		dot.Color = Color3.fromRGB(0, 160, 255) -- Blue for Legit
+		
 		if waypoint.Action == Enum.PathWaypointAction.Jump then
 			dot.Color = Color3.fromRGB(255, 200, 0)
 			dot.Size = Vector3.new(1, 1, 1)
@@ -395,47 +447,31 @@ local function showPath(waypoints)
 	end
 end
 
--- REALISTIC PHYSICS JUMP
 local function performPhysicsJump(humanoid, rootPart)
-	stopWalkAnim() -- Stop walking while in air
-	playJumpAnim(humanoid) -- Play jump anim
-	
+	stopWalkAnim() 
+	playJumpAnim(humanoid) 
 	humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 	humanoid.Jump = true
-	
-	task.wait(0.5) -- Wait a bit for air time
-	-- Anim stops naturally or when land
+	task.wait(0.5) 
 end
 
 local function moveSmart(humanoid, rootPart, targetPos, action)
-	-- Determine if we need to jump
 	local needsJump = (action == Enum.PathWaypointAction.Jump) or (targetPos.Y > rootPart.Position.Y + JUMP_THRESHOLD)
-	
 	if needsJump then
 		performPhysicsJump(humanoid, rootPart)
 		return true 
 	else
-		-- WALK
 		playWalkAnim(humanoid)
 		humanoid:MoveTo(targetPos)
-		
 		local startTime = tick()
 		local lastPos = rootPart.Position
-		
 		while true do
 			task.wait(0.1)
 			if not autoMineEnabled then stopWalkAnim() return false end
-			
 			local dist = (rootPart.Position - targetPos) * Vector3.new(1,0,1)
 			if dist.Magnitude < 3 then return true end
-			
 			if tick() - startTime > STUCK_TIMEOUT then stopWalkAnim() return false end
-			
-			-- Stuck check
-			if (rootPart.Position - lastPos).Magnitude < 0.2 then 
-				performPhysicsJump(humanoid, rootPart) 
-				return true 
-			end
+			if (rootPart.Position - lastPos).Magnitude < 0.2 then performPhysicsJump(humanoid, rootPart) return true end
 			lastPos = rootPart.Position
 		end
 	end
@@ -452,17 +488,13 @@ local function followPath(destination)
 
 	if success and path.Status == Enum.PathStatus.Success then
 		local waypoints = path:GetWaypoints()
-		showPath(waypoints)
+		showPath(waypoints) -- VISUALIZE
 		for i, waypoint in ipairs(waypoints) do
 			if i > 1 then 
-				if not moveSmart(hum, root, waypoint.Position, waypoint.Action) then 
-					stopWalkAnim() 
-					return false 
-				end
+				if not moveSmart(hum, root, waypoint.Position, waypoint.Action) then stopWalkAnim() return false end
 			end
 		end
 		stopWalkAnim()
-		visualFolder:ClearAllChildren()
 		return true
 	else
 		return false
@@ -488,7 +520,7 @@ task.spawn(function()
 				local closestItem = nil
 				local shortestDistance = math.huge
 				
-				-- 1. Find Safe Target
+				-- 1. Find Target
 				for _, area in ipairs(rocksFolder:GetChildren()) do
 					for _, spawnLoc in ipairs(area:GetChildren()) do
 						if isSpawnLocation(spawnLoc) then
@@ -496,13 +528,9 @@ task.spawn(function()
 								if isValidItem(item) and selectedTargets[item.Name] == true then
 									local itemPos = item:GetPivot().Position 
 									local dist = (currentPos - itemPos).Magnitude
-									
-									-- PLAYER PROXIMITY CHECK (Applies to Surface Mode mainly, but good for both)
-									if isAreaSafe(itemPos) then
-										if dist < shortestDistance then
-											shortestDistance = dist
-											closestItem = item
-										end
+									if dist < shortestDistance then
+										shortestDistance = dist
+										closestItem = item
 									end
 								end
 							end
@@ -519,17 +547,16 @@ task.spawn(function()
 					-- ===================================
 					if stealthModeEnabled then
 						statusLabel.Text = "🚇 Stealth: Traveling..."
-						rootPart.Anchored = true
+						enableFlightPhysics(rootPart)
 						
-						-- 1. Sink
-						local travelPos = rootPart.Position
-						if travelPos.Y > targetPos.Y - TRAVEL_DEPTH + 5 then 
-							local downPos = Vector3.new(travelPos.X, targetPos.Y - TRAVEL_DEPTH, travelPos.Z)
+						-- Sink
+						if rootPart.Position.Y > targetPos.Y - TRAVEL_DEPTH + 5 then 
+							local downPos = Vector3.new(rootPart.Position.X, targetPos.Y - TRAVEL_DEPTH, rootPart.Position.Z)
 							TweenService:Create(rootPart, TweenInfo.new(1), {CFrame = CFrame.new(downPos)}):Play()
 							task.wait(1)
 						end
 						
-						-- 2. Travel
+						-- Travel
 						local underRockPos = targetPos - Vector3.new(0, TRAVEL_DEPTH, 0)
 						local travelDist = (rootPart.Position - underRockPos).Magnitude
 						local timeToTravel = travelDist / MOVEMENT_SPEED
@@ -544,64 +571,58 @@ task.spawn(function()
 						end
 						
 						if autoMineEnabled then
-							-- 3. Hitbox Contact
-							statusLabel.Text = "⬆️ Hitbox Contact..."
-							TweenService:Create(rootPart, TweenInfo.new(0.4), {CFrame = CFrame.new(targetPos)}):Play()
-							task.wait(0.4)
+							-- STRICT CHECK
+							local canBeSeen = isSpotterNearby(targetPos)
 							
-							-- 4. Mine
+							if strictAvoidance and canBeSeen then
+								statusLabel.Text = "👁️ Spotted! Mining deep..."
+								-- Stay deep
+							else
+								statusLabel.Text = "⬆️ Approaching..."
+								local minePos = targetPos - Vector3.new(0, MINING_DEPTH, 0)
+								TweenService:Create(rootPart, TweenInfo.new(0.5), {CFrame = CFrame.new(minePos)}):Play()
+								task.wait(0.5)
+							end
+							
 							statusLabel.Text = "⛏️ Mining..."
 							while closestItem.Parent and autoMineEnabled do
 								pcall(function() ReplicatedStorage.Shared.Packages.Knit.Services.ToolService.RF.ToolActivated:InvokeServer("Pickaxe") end)
 								task.wait(0.1)
 							end
 							
-							-- 5. Retreat
 							statusLabel.Text = "⬇️ Retreating..."
 							TweenService:Create(rootPart, TweenInfo.new(0.5), {CFrame = CFrame.new(underRockPos)}):Play()
 							task.wait(0.5)
 						end
+						disableFlightPhysics(rootPart)
 					
 					-- ===================================
-					-- MODE B: SURFACE WALK (REALISTIC JUMP + MOB SAFE)
+					-- MODE B: LEGIT MODE (WALK ONLY)
 					-- ===================================
 					else 
 						statusLabel.Text = "🏃 Walking to target..."
-						rootPart.Anchored = false
+						disableFlightPhysics(rootPart)
 						local arrived = followPath(targetPos)
 						
 						if arrived and autoMineEnabled then
-							statusLabel.Text = "🛡️ Hiding from Mobs..."
-							
-							-- 1. Hide in Ground (Mob Safety)
-							rootPart.Anchored = true
-							local surfaceCFrame = rootPart.CFrame
-							local hidePos = targetPos - Vector3.new(0, HIDE_OFFSET, 0) 
-							TweenService:Create(rootPart, TweenInfo.new(0.5), {CFrame = CFrame.new(hidePos)}):Play()
-							task.wait(0.5)
-							
-							-- 2. Mine
-							statusLabel.Text = "⛏️ Mining..."
+							statusLabel.Text = "⛏️ Mining (Legit)..."
+							-- [[ CHANGED: REMOVED TWEEN HIDING IN LEGIT MODE ]]
+							-- Just stand there and mine
 							while closestItem.Parent and autoMineEnabled do
 								pcall(function() ReplicatedStorage.Shared.Packages.Knit.Services.ToolService.RF.ToolActivated:InvokeServer("Pickaxe") end)
 								task.wait(0.1)
 							end
-							
-							-- 3. Surface
-							statusLabel.Text = "⬆️ Surfacing..."
-							TweenService:Create(rootPart, TweenInfo.new(0.5), {CFrame = surfaceCFrame}):Play()
-							task.wait(0.5)
-							rootPart.Anchored = false
-							
 						else
 							statusLabel.Text = "⚠️ Path Failed."
 							task.wait(0.5)
 						end
+						
+						visualFolder:ClearAllChildren() -- Cleanup visuals after mine
 					end
 					
 					isCurrentlyMining = false
 				else
-					statusLabel.Text = "⚠️ No Safe Targets Found"
+					statusLabel.Text = "⚠️ No Targets"
 				end
 			end
 		end
@@ -633,4 +654,4 @@ end)
 
 task.wait(1)
 scanRocks()
-print("Realistic Miner Loaded")
+print("Legit Mode Restored")
