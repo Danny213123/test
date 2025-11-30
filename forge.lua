@@ -1,34 +1,33 @@
--- Rocks Scanner - Advanced Miner v2.8 (IMPROVED PATHFINDING)
+-- Rocks Scanner - Advanced Miner v2.12 (VARIABLE DEFINITION ORDER FIX)
 -- TYPE: LocalScript
 -- LOCATION: StarterPlayer -> StarterPlayerScripts
 -- 
--- FEATURES v2.8:
--- ✅ IMPROVED PATHFINDING: Following Roblox best practices and documentation
--- ✅ AgentCanClimb: ENABLED - fixes getting stuck on short walls
--- ✅ path.Blocked event: Automatically detects and handles blocked paths
--- ✅ Better agent parameters: Optimized radius, height, slope for climbing
--- ✅ Comprehensive cost table: Proper material costs for all terrain types
--- ✅ Dynamic recalculation: Updates path every 3s + on blocked events
--- ✅ Player avoidance: Skips ores being mined by others (12 studs)
--- ✅ Safe mining: Mines from 8 studs away, doesn't go to ore center
--- ✅ Fixed facing: Character properly faces ore (180° rotation)
--- ✅ Wall detection: Aborts pathfinding if stuck for 8+ checks
+-- FEATURES v2.12:
+-- ✅ VARIABLE ORDER FIX: COSTS and PATH_SPACING moved before getAgentParameters
+-- ✅ Fixed nil value errors from calling undefined variables
+-- ✅ Removed debugPrint from getAgentParameters (defined later in script)
+-- ✅ Uses HumanoidRootPart.Size: Standard Roblox method for character dimensions
+-- ✅ Conservative sizing: AgentRadius = max(X,Z) + 1 stud padding
+-- ✅ Full height: AgentHeight = rootSize.Y + 3 (accounts for head/legs)
+-- ✅ MoveToFinished event: Official Roblox waypoint detection
+-- ✅ Jump handling: Proper Enum.PathWaypointAction.Jump detection
+-- ✅ Large ore support: 15 stud mining range, won't climb on top
+-- ✅ Combat facing: Character faces enemies correctly
+-- ✅ Player avoidance: Skips ores being mined by others
 -- 
--- PATHFINDING IMPROVEMENTS v2.8:
--- ✅ AgentCanClimb = true: Allows climbing over short walls (CRITICAL FIX)
--- ✅ AgentMaxSlope = 89°: Can climb steeper surfaces (was 75°)
--- ✅ WaypointSpacing = 3: More accurate paths (was 4)
--- ✅ path.Blocked event: Detects obstacles appearing mid-path
--- ✅ Blocked handler: Automatically recomputes when path blocked
--- ✅ Direct movement distance: 15 studs (was 8) - less pathfinding overhead
--- ✅ Jump threshold: 2.5 studs (was 2.0) - better jump detection
--- ✅ Comprehensive costs: All material types properly weighted
--- ✅ Better stuck detection: 8 checks threshold (was 5)
+-- BUG FIXES v2.12:
+-- ✅ Fixed variable order: COSTS and PATH_SPACING now defined before use
+-- ✅ Removed debugPrint call from getAgentParameters (called before definition)
+-- ✅ Removed duplicate COSTS and PATH_SPACING definitions
+-- ✅ All constants now defined in correct order
 -- 
--- Based on Roblox documentation:
--- https://create.roblox.com/docs/characters/pathfinding
+-- PATHFINDING:
+-- ✅ Dynamic agent sizing based on HumanoidRootPart dimensions
+-- ✅ MoveToFinished event for reliable waypoint detection
+-- ✅ AgentCanClimb = true: Allows climbing over obstacles
+-- ✅ path.Blocked event: Detects obstacles mid-path
 -- 
--- VERSION: v2.8
+-- VERSION: v2.12
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -42,7 +41,7 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 -- Script Version
-local SCRIPT_VERSION = "v2.8"
+local SCRIPT_VERSION = "v2.12"
 
 -- =========================================================================
 -- CONFIGURATION (MOVED BEFORE FUNCTIONS THAT USE THEM)
@@ -328,21 +327,25 @@ local PLAYER_PATH_AVOIDANCE_DIST = 8 -- Avoid pathfinding near players (conserva
 local STUCK_TIMEOUT = 5         -- Timeout before assuming stuck (increased from 4)
 local JUMP_THRESHOLD = 2.5      -- Height difference to trigger jump (increased from 2.0)
 local DIRECT_PATH_DIST = 15     -- Use direct movement if within this distance (increased from 8)
-local MINING_RANGE = 8          -- Start mining when within this distance from ore
-local SAFE_MINING_OFFSET = 3    -- Stay this many studs away from ore center
+local MINING_RANGE = 15         -- Start mining when within this distance from ore (increased from 8 for large ores)
+local SAFE_MINING_OFFSET = 5    -- Stay this many studs away from ore center (increased from 3)
 local WAYPOINT_REACH_DIST = 2.5 -- Distance to consider waypoint reached (reduced for accuracy)
 local MAX_PATHFIND_ATTEMPTS = 10 -- Maximum attempts before using tween fallback
 local NATURAL_TWEEN_SPEED = 25  -- Speed for natural-looking tweens (studs/second)
 local WALL_STUCK_THRESHOLD = 8  -- If stuck against wall for this many checks, abort (increased from 5)
+local MAX_MINING_DISTANCE = 18  -- Maximum distance to mine from (prevents repositioning during mining)
 
--- Pathfinding Agent Parameters (Roblox Best Practices)
-local AGENT_RADIUS = 2          -- Agent collision radius
-local AGENT_HEIGHT = 5          -- Agent height
+-- Pathfinding Agent Parameters (Roblox Best Practices - FIXED for actual character size)
 local AGENT_CAN_JUMP = true     -- Allow jumping over obstacles
 local AGENT_CAN_CLIMB = true    -- NEW: Allow climbing over small walls (fixes stuck issues)
 local AGENT_MAX_SLOPE = 89      -- Maximum slope angle (increased from 75 for better climbing)
 
--- Pathfinding Costs (Roblox Recommended)
+-- Path Settings (must be defined before getAgentParameters)
+local PATH_SPACING = 3          -- Waypoint spacing - lower = more accurate but more waypoints
+local PATH_UPDATE_INTERVAL = 3  -- Recalculate path every 3 seconds during movement
+local BLOCKED_PATH_RETRY_DELAY = 0.5 -- Wait before retrying after blocked path
+
+-- Pathfinding Costs (must be defined before getAgentParameters)
 local COSTS = {
 	Water = 100,           -- Very high cost to avoid water
 	CrackedLava = math.huge, -- Never cross lava
@@ -362,10 +365,57 @@ local COSTS = {
 	Air = math.huge,       -- Don't path through air (prevents falling)
 }
 
--- Path Update Settings
-local PATH_SPACING = 3          -- Waypoint spacing - lower = more accurate but more waypoints
-local PATH_UPDATE_INTERVAL = 3  -- Recalculate path every 3 seconds during movement
-local BLOCKED_PATH_RETRY_DELAY = 0.5 -- Wait before retrying after blocked path
+local function getAgentParameters()
+	local character = player.Character
+	if not character then
+		-- Default fallback values
+		return {
+			AgentRadius = 2,
+			AgentHeight = 5,
+			AgentCanJump = true,
+			AgentCanClimb = true,
+			AgentMaxSlope = 89,
+			WaypointSpacing = 3,
+			Costs = COSTS
+		}
+	end
+	
+	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+	if not humanoidRootPart then
+		-- Default fallback
+		return {
+			AgentRadius = 2,
+			AgentHeight = 5,
+			AgentCanJump = true,
+			AgentCanClimb = true,
+			AgentMaxSlope = 89,
+			WaypointSpacing = 3,
+			Costs = COSTS
+		}
+	end
+	
+	-- CRITICAL: Calculate agent size based on ACTUAL character dimensions
+	-- This prevents paths from going through walls
+	-- Using HumanoidRootPart size as base (standard Roblox method)
+	local rootSize = humanoidRootPart.Size
+	
+	-- AgentRadius should be larger than the widest dimension to prevent wall clipping
+	-- Standard character is 2x2x1 (HumanoidRootPart), so radius ~2-3 studs
+	local agentRadius = math.max(rootSize.X, rootSize.Z) + 1  -- Add 1 stud padding for safety
+	local agentHeight = rootSize.Y + 3  -- Add extra height for head/legs (standard character ~5-6 studs)
+	
+	-- Note: Agent parameters - Radius: ~3, Height: ~5 for standard character
+	
+	return {
+		AgentRadius = agentRadius,
+		AgentHeight = agentHeight,
+		AgentCanJump = AGENT_CAN_JUMP,
+		AgentCanClimb = AGENT_CAN_CLIMB,
+		AgentMaxSlope = AGENT_MAX_SLOPE,
+		WaypointSpacing = PATH_SPACING,
+		Costs = COSTS
+	}
+end
 
 -- Visuals
 visualFolder = workspace:FindFirstChild("PathVisuals") or Instance.new("Folder")
@@ -601,15 +651,8 @@ end
 -- =========================================================================
 local function createAdvancedPath(startPos, endPos)
 	-- Create path with comprehensive settings following Roblox documentation
-	local pathParams = {
-		AgentRadius = AGENT_RADIUS,
-		AgentHeight = AGENT_HEIGHT,
-		AgentCanJump = AGENT_CAN_JUMP,
-		AgentCanClimb = AGENT_CAN_CLIMB,  -- CRITICAL: Fixes getting stuck on short walls
-		AgentMaxSlope = AGENT_MAX_SLOPE,
-		WaypointSpacing = PATH_SPACING,
-		Costs = COSTS
-	}
+	-- CRITICAL: Uses actual character size to prevent paths through walls
+	local pathParams = getAgentParameters()
 	
 	local path = PathfindingService:CreatePath(pathParams)
 	
@@ -1384,7 +1427,7 @@ local function attackMob(mob, character)
 		-- Face the mob properly using CFrame.lookAt
 		if mobRoot and rootPart then
 			local lookPos = Vector3.new(mobRoot.Position.X, rootPart.Position.Y, mobRoot.Position.Z) -- Keep Y level
-			rootPart.CFrame = CFrame.lookAt(rootPart.Position, lookPos) * CFrame.Angles(0, math.pi, 0)
+			rootPart.CFrame = CFrame.lookAt(rootPart.Position, lookPos) -- Face mob directly (NO 180° rotation for combat)
 		end
 		
 		-- Move closer if too far
@@ -1583,61 +1626,85 @@ local function moveToWaypoint(humanoid, rootPart, targetPos, action)
 		return false
 	end
 	
-	local needsJump = (action == Enum.PathWaypointAction.Jump) or (targetPos.Y > rootPart.Position.Y + JUMP_THRESHOLD)
-	
-	if needsJump then 
-		debugPrint("Jumping!")
-		performPhysicsJump(humanoid, rootPart)
-		task.wait(0.3)
+	-- CRITICAL: Handle jump action BEFORE MoveTo (Roblox best practice)
+	if action == Enum.PathWaypointAction.Jump then
+		debugPrint("⬆️ Jump waypoint detected!")
+		humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		humanoid.Jump = true
 	end
 	
+	-- Start moving to waypoint
 	playWalkAnim(humanoid)
 	humanoid:MoveTo(targetPos)
 	
+	-- CRITICAL: Use MoveToFinished event (Roblox official method)
+	-- This is MORE RELIABLE than distance checking
+	local moveFinished = false
+	local moveSuccess = false
+	local character = player.Character
+	
+	-- Set up MoveToFinished listener
+	local moveConnection
+	moveConnection = humanoid.MoveToFinished:Connect(function(reached)
+		moveFinished = true
+		moveSuccess = reached
+		if moveConnection then
+			moveConnection:Disconnect()
+			moveConnection = nil
+		end
+	end)
+	
+	-- Safety: Also monitor for issues while moving
 	local startTime = tick()
 	local lastPos = rootPart.Position
 	local stuckCounter = 0
-	local character = player.Character
 	
-	while autoMineEnabled do
+	while autoMineEnabled and not moveFinished do
 		task.wait(0.1)
 		
-		-- CRITICAL: Check for nearby mobs during pathfinding
+		-- Timeout after stuck for too long
+		if tick() - startTime > STUCK_TIMEOUT then
+			debugPrint("⏱️ Movement timeout - stuck for", STUCK_TIMEOUT, "seconds")
+			if moveConnection then moveConnection:Disconnect() end
+			return false
+		end
+		
+		-- Combat check during pathfinding
 		if strictAvoidance or isBeingAttacked then
 			local nearbyMobs = getNearbyMobs(rootPart.Position, CRITICAL_MOB_DIST)
 			if #nearbyMobs > 0 then
 				debugPrint("Mob detected during pathfinding! Engaging combat...")
+				if moveConnection then moveConnection:Disconnect() end
 				stopWalkAnim()
 				handleCombat(character)
 				-- Resume walking animation and movement after combat
 				playWalkAnim(humanoid)
 				humanoid:MoveTo(targetPos)
+				-- Reconnect MoveToFinished
+				moveConnection = humanoid.MoveToFinished:Connect(function(reached)
+					moveFinished = true
+					moveSuccess = reached
+				end)
 			end
 		end
 		
-		-- Check if we're actually swimming (more reliable than voxel check)
+		-- Water check
 		if isPlayerInWater() then
 			debugPrint("Player is swimming! Jumping out!")
+			if moveConnection then moveConnection:Disconnect() end
 			performPhysicsJump(humanoid, rootPart)
 			return false
 		end
 		
-		-- Check horizontal distance to target
-		local horizontalDist = ((rootPart.Position - targetPos) * Vector3.new(1, 0, 1)).Magnitude
-		
-		if horizontalDist < WAYPOINT_REACH_DIST then 
-			debugPrint("Waypoint reached!")
-			return true 
-		end
-		
-		-- Stuck detection with wall detection
+		-- Stuck detection
 		local moved = (rootPart.Position - lastPos).Magnitude
 		if moved < 0.3 then
 			stuckCounter = stuckCounter + 1
-			if stuckCounter > WALL_STUCK_THRESHOLD then -- Stuck against wall
-				debugPrint("Stuck against wall for", WALL_STUCK_THRESHOLD, "checks - aborting waypoint")
-				return false -- Signal pathfinding to retry or use tween
-			elseif stuckCounter > 10 then -- Normal stuck - try jumping
+			if stuckCounter > WALL_STUCK_THRESHOLD then
+				debugPrint("🧱 Stuck against wall for", WALL_STUCK_THRESHOLD, "checks")
+				if moveConnection then moveConnection:Disconnect() end
+				return false
+			elseif stuckCounter > 10 then
 				debugPrint("Stuck! Jumping...")
 				performPhysicsJump(humanoid, rootPart)
 				task.wait(0.3)
@@ -1646,19 +1713,22 @@ local function moveToWaypoint(humanoid, rootPart, targetPos, action)
 			stuckCounter = 0
 		end
 		
-		-- Timeout
-		if tick() - startTime > STUCK_TIMEOUT then 
-			debugPrint("Waypoint timeout - jumping and continuing")
-			performPhysicsJump(humanoid, rootPart) 
-			task.wait(0.3)
-			return true -- Continue to next waypoint
-		end
-		
 		lastPos = rootPart.Position
 	end
 	
-	stopWalkAnim()
-	return false
+	-- Cleanup
+	if moveConnection then
+		moveConnection:Disconnect()
+		moveConnection = nil
+	end
+	
+	if moveSuccess then
+		debugPrint("✅ Waypoint reached!")
+		return true
+	else
+		debugPrint("❌ Failed to reach waypoint")
+		return false
+	end
 end
 
 -- =========================================================================
@@ -2146,12 +2216,12 @@ task.spawn(function()
 									
 									-- Check if still in range of ore
 									local currentDistToOre = (rootPart.Position - targetPos).Magnitude
-									if currentDistToOre > 10 then
+									if currentDistToOre > MAX_MINING_DISTANCE then
 										debugPrint("Moved too far from ore during mining (", math.floor(currentDistToOre), "studs)")
 										statusLabel.Text = "⚠️ Too far from ore! Repositioning..."
 										
 										-- Try to get back to ore
-										local returnSuccess = followPath(targetPos, 0)
+										local returnSuccess = followPath(safeMiningPos, 0)
 										
 										if not returnSuccess then
 											debugPrint("Failed to return to ore position")
@@ -2172,7 +2242,7 @@ task.spawn(function()
 											switchToPickaxe()
 											-- After combat, check if we're still near the ore
 											local distToOre = (rootPart.Position - targetPos).Magnitude
-											if distToOre > 15 then
+											if distToOre > MAX_MINING_DISTANCE then
 												debugPrint("Moved too far during combat (", math.floor(distToOre), "studs), re-pathing...")
 												statusLabel.Text = "🔄 Returning to ore after combat..."
 												
@@ -2229,7 +2299,7 @@ task.spawn(function()
 									-- Periodic position check (detect if player fell)
 									if tick() - lastPositionCheck >= POSITION_CHECK_INTERVAL then
 										local distToOre = (rootPart.Position - targetPos).Magnitude
-										if distToOre > 20 then
+										if distToOre > 25 then
 											debugPrint("Player too far from ore (fell?), re-pathing...")
 											statusLabel.Text = "🔄 Repositioning to ore..."
 											
@@ -2363,13 +2433,13 @@ end)
 -- Initial scan
 task.wait(1)
 scanRocks()
-print("✅ Advanced Miner " .. SCRIPT_VERSION .. " - IMPROVED PATHFINDING!")
-print("🗺️ PATHFINDING: Roblox best practices implemented")
-print("🧗 AgentCanClimb ENABLED: Fixes stuck on short walls")
-print("🚧 path.Blocked event: Auto-detects & handles blocked paths")
-print("📐 Better parameters: 89° slope, 3 stud spacing, 15 stud direct range")
-print("👥 PLAYER AVOIDANCE: Skips ores with players nearby (12 studs)")
-print("🎯 SAFE MINING: Stops at 8 studs from ore center")
+print("✅ Advanced Miner " .. SCRIPT_VERSION .. " - VARIABLE ORDER FIX!")
+print("🐛 BUG FIX: Fixed nil value errors from variable order")
+print("📏 COSTS/PATH_SPACING: Now defined before getAgentParameters")
+print("🗺️ PATHFINDING: MoveToFinished event + dynamic sizing")
+print("⬆️ Jump handling: Proper PathWaypointAction detection")
+print("👥 PLAYER AVOIDANCE: Skips ores with players nearby")
+print("⛏️ LARGE ORE: 15 stud range, safe positioning")
 print("🎆 CANNON: Auto-fires from spawn to cave (World 2)")
-print("🥊 COMBAT: Dodge rolls (25%) + Block with F key (33%)")
-print("⚔️ Smart combat + defensive movement")
+print("🥊 COMBAT: Dodge + Block + Correct facing")
+print("⚔️ Smart tactics + defensive movement")
