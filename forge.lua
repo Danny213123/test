@@ -1,4 +1,4 @@
--- Rocks Scanner (Ore ESP + Robust Pathfinding + Legit Mode)
+-- Rocks Scanner (Rebuilt Pathfinding Engine + Persistent Visuals)
 -- TYPE: LocalScript
 -- LOCATION: StarterPlayer -> StarterPlayerScripts
 
@@ -16,10 +16,11 @@ local playerGui = player:WaitForChild("PlayerGui")
 -- CONFIGURATION
 -- =========================================================================
 local autoMineEnabled = false
-local stealthModeEnabled = false 
+local stealthModeEnabled = false -- Default to Legit
 local strictAvoidance = true 
 local playerEspEnabled = false
-local oreEspEnabled = false -- [[ NEW ]]
+local oreEspEnabled = false
+local mobEspEnabled = false
 local isCurrentlyMining = false 
 local selectedTargets = {} 
 
@@ -29,10 +30,13 @@ local TRAVEL_DEPTH = 20
 local MINING_DEPTH = 12         
 local MOVEMENT_SPEED = 35       
 
--- Pathfinding Settings
-local STUCK_TIMEOUT = 3         -- Increased slightly
-local JUMP_THRESHOLD = 2.0 
-local DIRECT_PATH_DIST = 25     -- [[ NEW ]] If rock is closer than this, walk directly (no pathfinding)
+-- Safety
+local CRITICAL_MOB_DIST = 15    
+
+-- Pathfinding Constants
+local WAYPOINT_TIMEOUT = 4      -- Max time to reach ONE dot
+local JUMP_THRESHOLD = 2.0      
+local DIRECT_WALK_DIST = 30     -- Skip pathfinding if closer than this
 
 -- Visuals
 local visualFolder = workspace:FindFirstChild("PathVisuals") or Instance.new("Folder")
@@ -58,9 +62,9 @@ screenGui.Parent = playerGui
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.new(0, 350, 0, 600) -- Taller for extra buttons
-mainFrame.Position = UDim2.new(0.5, -175, 0.5, -300)
-mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+mainFrame.Size = UDim2.new(0, 350, 0, 650)
+mainFrame.Position = UDim2.new(0.5, -175, 0.5, -325)
+mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 mainFrame.BorderSizePixel = 0
 mainFrame.Parent = screenGui
 Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
@@ -68,16 +72,16 @@ Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
 -- Header
 local titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 40)
-titleBar.BackgroundColor3 = Color3.fromRGB(0, 120, 255) 
+titleBar.BackgroundColor3 = Color3.fromRGB(255, 215, 0) -- Gold for Premium
 titleBar.Parent = mainFrame
 Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
 
 local titleLabel = Instance.new("TextLabel")
-titleLabel.Text = "Robust Miner + ESP"
+titleLabel.Text = "Rebuilt Pathfinding"
 titleLabel.Size = UDim2.new(1, -50, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.TextColor3 = Color3.new(1, 1, 1)
+titleLabel.TextColor3 = Color3.new(0, 0, 0)
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 18
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -95,7 +99,7 @@ Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
 
 -- CONTROLS
 local controlsFrame = Instance.new("Frame")
-controlsFrame.Size = UDim2.new(1, -20, 0, 160) -- Much Taller
+controlsFrame.Size = UDim2.new(1, -20, 0, 200)
 controlsFrame.Position = UDim2.new(0, 10, 0, 50)
 controlsFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 controlsFrame.Parent = mainFrame
@@ -149,7 +153,7 @@ strictButton.Parent = controlsFrame
 Instance.new("UICorner", strictButton).CornerRadius = UDim.new(0, 4)
 
 local strictLabel = Instance.new("TextLabel")
-strictLabel.Text = "STRICT AVOIDANCE"
+strictLabel.Text = "REACTIVE DODGE"
 strictLabel.Size = UDim2.new(0, 200, 0, 24)
 strictLabel.Position = UDim2.new(0, 40, 0, 80)
 strictLabel.BackgroundTransparency = 1
@@ -161,7 +165,7 @@ strictLabel.Parent = controlsFrame
 -- 4. PLAYER ESP
 local espButton = Instance.new("TextButton")
 espButton.Size = UDim2.new(0, 24, 0, 24)
-espButton.Position = UDim2.new(0, 10, 0, 115)
+espButton.Position = UDim2.new(0, 180, 0, 10)
 espButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
 espButton.Text = ""
 espButton.Parent = controlsFrame
@@ -170,14 +174,14 @@ Instance.new("UICorner", espButton).CornerRadius = UDim.new(0, 4)
 local espLabel = Instance.new("TextLabel")
 espLabel.Text = "PLAYER ESP"
 espLabel.Size = UDim2.new(0, 100, 0, 24)
-espLabel.Position = UDim2.new(0, 40, 0, 115)
+espLabel.Position = UDim2.new(0, 210, 0, 10)
 espLabel.BackgroundTransparency = 1
 espLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
 espLabel.Font = Enum.Font.Gotham
 espLabel.TextXAlignment = Enum.TextXAlignment.Left
 espLabel.Parent = controlsFrame
 
--- 5. ORE ESP [[ NEW ]]
+-- 5. ORE ESP
 local oreEspButton = Instance.new("TextButton")
 oreEspButton.Size = UDim2.new(0, 24, 0, 24)
 oreEspButton.Position = UDim2.new(0, 160, 0, 115)
@@ -191,11 +195,29 @@ oreEspLabel.Text = "ORE ESP"
 oreEspLabel.Size = UDim2.new(0, 100, 0, 24)
 oreEspLabel.Position = UDim2.new(0, 190, 0, 115)
 oreEspLabel.BackgroundTransparency = 1
-oreEspLabel.TextColor3 = Color3.fromRGB(0, 255, 255) -- Cyan
+oreEspLabel.TextColor3 = Color3.fromRGB(0, 255, 255)
 oreEspLabel.Font = Enum.Font.Gotham
 oreEspLabel.TextXAlignment = Enum.TextXAlignment.Left
 oreEspLabel.Parent = controlsFrame
 
+-- 6. MOB ESP
+local mobEspButton = Instance.new("TextButton")
+mobEspButton.Size = UDim2.new(0, 24, 0, 24)
+mobEspButton.Position = UDim2.new(0, 160, 0, 150)
+mobEspButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+mobEspButton.Text = ""
+mobEspButton.Parent = controlsFrame
+Instance.new("UICorner", mobEspButton).CornerRadius = UDim.new(0, 4)
+
+local mobEspLabel = Instance.new("TextLabel")
+mobEspLabel.Text = "MOB ESP"
+mobEspLabel.Size = UDim2.new(0, 100, 0, 24)
+mobEspLabel.Position = UDim2.new(0, 190, 0, 150)
+mobEspLabel.BackgroundTransparency = 1
+mobEspLabel.TextColor3 = Color3.fromRGB(170, 0, 255)
+mobEspLabel.Font = Enum.Font.Gotham
+mobEspLabel.TextXAlignment = Enum.TextXAlignment.Left
+mobEspLabel.Parent = controlsFrame
 
 -- Refresh
 local refreshBtn = Instance.new("TextButton")
@@ -210,8 +232,8 @@ Instance.new("UICorner", refreshBtn).CornerRadius = UDim.new(0, 4)
 
 -- Scroll
 local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Size = UDim2.new(1, -20, 1, -220)
-scrollFrame.Position = UDim2.new(0, 10, 0, 220)
+scrollFrame.Size = UDim2.new(1, -20, 1, -260)
+scrollFrame.Position = UDim2.new(0, 10, 0, 260)
 scrollFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 scrollFrame.ScrollBarThickness = 6
 scrollFrame.Parent = mainFrame
@@ -233,7 +255,7 @@ statusLabel.TextSize = 12
 statusLabel.Parent = mainFrame
 
 -- =========================================================================
--- PHYSICS & REPLICATION HELPERS
+-- PHYSICS & ANIMATIONS
 -- =========================================================================
 local function enableFlightPhysics(rootPart)
 	local bv = rootPart:FindFirstChild("HoldVelocity") or Instance.new("BodyVelocity")
@@ -263,9 +285,6 @@ local function disableFlightPhysics(rootPart)
 	end
 end
 
--- =========================================================================
--- ANIMATIONS
--- =========================================================================
 local function getWalkAnimId(humanoid) return (humanoid.RigType == Enum.HumanoidRigType.R15) and "rbxassetid://507767714" or "rbxassetid://180426354" end
 local function getJumpAnimId(humanoid) return (humanoid.RigType == Enum.HumanoidRigType.R15) and "rbxassetid://507765000" or "rbxassetid://125750702" end
 
@@ -301,22 +320,18 @@ end
 -- =========================================================================
 local function updateESP()
 	espFolder:ClearAllChildren()
-	
-	-- Player ESP
 	if playerEspEnabled then
 		for _, v in ipairs(Players:GetPlayers()) do
 			if v ~= player and v.Character then
 				local highlight = Instance.new("Highlight")
 				highlight.Adornee = v.Character
-				highlight.FillColor = Color3.fromRGB(255, 0, 0) -- Red
+				highlight.FillColor = Color3.fromRGB(255, 0, 0)
 				highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
 				highlight.FillTransparency = 0.5
 				highlight.Parent = espFolder
 			end
 		end
 	end
-	
-	-- Ore ESP
 	if oreEspEnabled then
 		local workspace = game:GetService("Workspace")
 		local rocksFolder = workspace:FindFirstChild("Rocks")
@@ -325,11 +340,10 @@ local function updateESP()
 				for _, spawnLoc in ipairs(area:GetChildren()) do
 					if spawnLoc:IsA("SpawnLocation") then
 						for _, item in ipairs(spawnLoc:GetChildren()) do
-							-- Only highlight selected items
 							if selectedTargets[item.Name] == true then
 								local highlight = Instance.new("Highlight")
 								highlight.Adornee = item
-								highlight.FillColor = Color3.fromRGB(0, 255, 255) -- Cyan
+								highlight.FillColor = Color3.fromRGB(0, 255, 255)
 								highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
 								highlight.FillTransparency = 0.3
 								highlight.Parent = espFolder
@@ -340,11 +354,24 @@ local function updateESP()
 			end
 		end
 	end
+	if mobEspEnabled then
+		local living = workspace:FindFirstChild("Living")
+		if living then
+			for _, mob in ipairs(living:GetChildren()) do
+				if mob:IsA("Model") and mob:FindFirstChild("Humanoid") and mob ~= player.Character then
+					local highlight = Instance.new("Highlight")
+					highlight.Adornee = mob
+					highlight.FillColor = Color3.fromRGB(170, 0, 255)
+					highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+					highlight.FillTransparency = 0.4
+					highlight.Parent = espFolder
+				end
+			end
+		end
+	end
 end
-
 Players.PlayerAdded:Connect(function() task.wait(1) updateESP() end)
 Players.PlayerRemoving:Connect(updateESP)
--- Update ESP loop (slower update is fine)
 task.spawn(function() while true do task.wait(2) updateESP() end end)
 
 espButton.MouseButton1Click:Connect(function()
@@ -352,18 +379,20 @@ espButton.MouseButton1Click:Connect(function()
 	espButton.BackgroundColor3 = playerEspEnabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(80, 80, 80)
 	updateESP()
 end)
-
 oreEspButton.MouseButton1Click:Connect(function()
 	oreEspEnabled = not oreEspEnabled
 	oreEspButton.BackgroundColor3 = oreEspEnabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(80, 80, 80)
 	updateESP()
 end)
-
+mobEspButton.MouseButton1Click:Connect(function()
+	mobEspEnabled = not mobEspEnabled
+	mobEspButton.BackgroundColor3 = mobEspEnabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(80, 80, 80)
+	updateESP()
+end)
 
 -- =========================================================================
 -- GUI LOGIC (Toggles)
 -- =========================================================================
-
 local function updateAutoMineVisuals()
 	if autoMineEnabled then
 		autoMineButton.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
@@ -381,22 +410,18 @@ local function updateAutoMineVisuals()
 		end
 	end
 end
-
 autoMineButton.MouseButton1Click:Connect(function()
 	autoMineEnabled = not autoMineEnabled
 	updateAutoMineVisuals()
 end)
-
 stealthButton.MouseButton1Click:Connect(function()
 	stealthModeEnabled = not stealthModeEnabled
 	stealthButton.BackgroundColor3 = stealthModeEnabled and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(80, 80, 80)
 end)
-
 strictButton.MouseButton1Click:Connect(function()
 	strictAvoidance = not strictAvoidance
 	strictButton.BackgroundColor3 = strictAvoidance and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(80, 80, 80)
 end)
-
 local function createRow(itemName, count)
 	local row = Instance.new("Frame")
 	row.Name = itemName
@@ -431,13 +456,11 @@ local function createRow(itemName, count)
 		local newState = not checkMark.Visible
 		checkMark.Visible = newState
 		selectedTargets[itemName] = newState
-		updateESP() -- Refresh ESP instantly when selection changes
+		updateESP()
 	end)
 end
-
 local function isSpawnLocation(obj) return obj:IsA("SpawnLocation") or obj.Name == "SpawnLocation" end
 local function isValidItem(item) return not (item:IsA("Decal") or item:IsA("SurfaceGui") or item:IsA("TouchTransmitter") or item:IsA("Weld") or item:IsA("Script")) end
-
 local function scanRocks()
 	for _, child in ipairs(scrollFrame:GetChildren()) do if child:IsA("Frame") then child:Destroy() end end
 	local workspace = game:GetService("Workspace")
@@ -460,49 +483,42 @@ local function scanRocks()
 end
 
 -- =========================================================================
--- STRICT AVOIDANCE & RAYCASTING
+-- SAFETY
 -- =========================================================================
-local function isSpotterNearby(targetPos)
-	for _, otherPlayer in ipairs(Players:GetPlayers()) do
-		if otherPlayer ~= player and otherPlayer.Character then
-			local head = otherPlayer.Character:FindFirstChild("Head")
-			if head then
-				local origin = head.Position
-				local directionVector = (targetPos - origin)
-				local dist = directionVector.Magnitude
-				if dist < SIGHT_DISTANCE then
-					local rayParams = RaycastParams.new()
-					rayParams.FilterDescendantsInstances = {player.Character, otherPlayer.Character}
-					rayParams.FilterType = Enum.RaycastFilterType.Exclude
-					local result = workspace:Raycast(origin, directionVector, rayParams)
-					if not result or (result.Position - targetPos).Magnitude < 5 then 
-						return true 
-					end
+local function isMobTooClose(myPos)
+	local living = workspace:FindFirstChild("Living")
+	if living then
+		for _, mob in ipairs(living:GetChildren()) do
+			if mob ~= player.Character and mob:FindFirstChild("HumanoidRootPart") then
+				local dist = (mob.HumanoidRootPart.Position - myPos).Magnitude
+				if dist < CRITICAL_MOB_DIST then
+					return true
 				end
 			end
 		end
 	end
-	return false 
+	return false
 end
 
 -- =========================================================================
--- MOVEMENT FUNCTIONS (ROBUST UPDATE)
+-- NEW PATHFINDING ENGINE (Persistent Visuals)
 -- =========================================================================
 
-local function showPath(waypoints)
-	visualFolder:ClearAllChildren()
+local function drawPath(waypoints)
+	-- DO NOT CLEAR PREVIOUS DOTS HERE. We want them to stay until we reach target.
+	-- Only clear when starting a NEW target.
 	for _, waypoint in ipairs(waypoints) do
 		local dot = Instance.new("Part")
 		dot.Shape = Enum.PartType.Ball
-		dot.Size = Vector3.new(0.6, 0.6, 0.6)
-		dot.Position = waypoint.Position + Vector3.new(0, 0.5, 0)
+		dot.Size = Vector3.new(0.8, 0.8, 0.8)
+		dot.Position = waypoint.Position
 		dot.Anchored = true
 		dot.CanCollide = false
 		dot.Material = Enum.Material.Neon
-		dot.Color = Color3.fromRGB(0, 160, 255)
+		dot.Color = Color3.fromRGB(0, 255, 0) -- Green
 		if waypoint.Action == Enum.PathWaypointAction.Jump then
-			dot.Color = Color3.fromRGB(255, 200, 0)
-			dot.Size = Vector3.new(1, 1, 1)
+			dot.Color = Color3.fromRGB(255, 200, 0) -- Yellow
+			dot.Size = Vector3.new(1.2, 1.2, 1.2)
 		end
 		dot.Parent = visualFolder
 	end
@@ -516,80 +532,83 @@ local function performPhysicsJump(humanoid, rootPart)
 	task.wait(0.5) 
 end
 
-local function moveSmart(humanoid, rootPart, targetPos, action)
-	local needsJump = (action == Enum.PathWaypointAction.Jump) or (targetPos.Y > rootPart.Position.Y + JUMP_THRESHOLD)
-	if needsJump then
+local function moveSingleWaypoint(humanoid, rootPart, targetPos, action)
+	-- Jump Check
+	if (action == Enum.PathWaypointAction.Jump) or (targetPos.Y > rootPart.Position.Y + JUMP_THRESHOLD) then
 		performPhysicsJump(humanoid, rootPart)
 		return true 
-	else
-		playWalkAnim(humanoid)
-		humanoid:MoveTo(targetPos)
-		local startTime = tick()
-		local lastPos = rootPart.Position
-		while true do
-			task.wait(0.1)
-			if not autoMineEnabled then stopWalkAnim() return false end
-			local dist = (rootPart.Position - targetPos) * Vector3.new(1,0,1)
-			if dist.Magnitude < 3 then return true end
-			if tick() - startTime > STUCK_TIMEOUT then stopWalkAnim() return false end
-			if (rootPart.Position - lastPos).Magnitude < 0.2 then performPhysicsJump(humanoid, rootPart) return true end
-			lastPos = rootPart.Position
+	end
+	
+	-- Walk
+	playWalkAnim(humanoid)
+	humanoid:MoveTo(targetPos)
+	
+	local startTime = tick()
+	
+	-- Wait loop for this specific dot
+	while true do
+		task.wait(0.1)
+		
+		-- Abort conditions
+		if not autoMineEnabled then stopWalkAnim() return false end
+		
+		-- Reached?
+		local dist = (rootPart.Position - targetPos) * Vector3.new(1,0,1) -- Ignore Y
+		if dist.Magnitude < 3 then 
+			return true 
+		end
+		
+		-- Timeout / Stuck
+		if tick() - startTime > WAYPOINT_TIMEOUT then 
+			performPhysicsJump(humanoid, rootPart) -- Try Unstick
+			return true -- Force next point
 		end
 	end
 end
 
--- [[ ROBUST UPDATE: DIRECT PATH + RETRIES ]]
-local function followPath(destination)
+local function traversePath(finalDestination)
 	local character = player.Character
 	if not character then return false end
 	local hum, root = character:FindFirstChild("Humanoid"), character:FindFirstChild("HumanoidRootPart")
 	if not hum or not root then return false end
 
-	-- 1. DIRECT MOVE CHECK (Fixes Short Distance Stutter)
-	if (root.Position - destination).Magnitude < DIRECT_PATH_DIST then
-		-- Check Line of Sight
-		local rayParams = RaycastParams.new()
-		rayParams.FilterDescendantsInstances = {character}
-		local result = workspace:Raycast(root.Position, (destination - root.Position), rayParams)
-		if not result then
-			-- Clear path, just walk
-			visualFolder:ClearAllChildren()
-			playWalkAnim(hum)
-			hum:MoveTo(destination)
-			hum.MoveToFinished:Wait()
-			stopWalkAnim()
-			return true
-		end
+	-- Cleanup old visuals before starting NEW path
+	visualFolder:ClearAllChildren()
+
+	-- 1. Direct Walk Check
+	if (root.Position - finalDestination).Magnitude < DIRECT_WALK_DIST then
+		-- Draw Target Dot
+		local dot = Instance.new("Part"); dot.Shape = Enum.PartType.Ball; dot.Size = Vector3.new(1,1,1); dot.Position = finalDestination; dot.Anchored=true; dot.CanCollide=false; dot.Color=Color3.fromRGB(0,255,0); dot.Parent=visualFolder
+		return moveSingleWaypoint(hum, root, finalDestination, nil)
 	end
 
-	-- 2. ROBUST PATHFINDING (With Retry)
-	local path = PathfindingService:CreatePath({AgentRadius=2.5, AgentHeight=5, AgentCanJump=true, AgentMaxSlope=60, WaypointSpacing=5})
+	-- 2. Compute Full Path
+	local path = PathfindingService:CreatePath({
+		AgentRadius=2.0, AgentHeight=5, AgentCanJump=true, AgentMaxSlope=60, WaypointSpacing=6
+	})
 	
-	local success = false
-	local attempts = 0
-	while not success and attempts < 3 do
-		attempts = attempts + 1
-		local ok, _ = pcall(function() path:ComputeAsync(root.Position, destination) end)
-		if ok and path.Status == Enum.PathStatus.Success then
-			success = true
-		else
-			task.wait(0.1)
-		end
-	end
+	local success, _ = pcall(function() path:ComputeAsync(root.Position, finalDestination) end)
 
-	if success then
+	if success and path.Status == Enum.PathStatus.Success then
 		local waypoints = path:GetWaypoints()
-		showPath(waypoints)
+		drawPath(waypoints) -- VISUALIZE ONCE
+		
+		-- Iterate Waypoints
 		for i, waypoint in ipairs(waypoints) do
-			if i > 1 then 
-				if not moveSmart(hum, root, waypoint.Position, waypoint.Action) then stopWalkAnim() return false end
+			if i > 1 then -- Skip current pos
+				if not moveSingleWaypoint(hum, root, waypoint.Position, waypoint.Action) then 
+					stopWalkAnim() 
+					return false -- Failed
+				end
 			end
 		end
+		
 		stopWalkAnim()
 		return true
 	else
-		warn("Path failed after 3 attempts")
-		return false
+		-- Fallback
+		warn("Path failed. Brute forcing.")
+		return moveSingleWaypoint(hum, root, finalDestination, nil)
 	end
 end
 
@@ -635,46 +654,40 @@ task.spawn(function()
 					local targetPos = closestItem:GetPivot().Position
 					
 					-- ===================================
-					-- MODE A: STEALTH (TWEEN UNDERGROUND)
+					-- MODE A: STEALTH
 					-- ===================================
 					if stealthModeEnabled then
+						visualFolder:ClearAllChildren() -- No path needed for stealth
 						statusLabel.Text = "🚇 Stealth: Traveling..."
 						enableFlightPhysics(rootPart)
-						
-						-- Sink
 						if rootPart.Position.Y > targetPos.Y - TRAVEL_DEPTH + 5 then 
 							local downPos = Vector3.new(rootPart.Position.X, targetPos.Y - TRAVEL_DEPTH, rootPart.Position.Z)
 							TweenService:Create(rootPart, TweenInfo.new(1), {CFrame = CFrame.new(downPos)}):Play()
 							task.wait(1)
 						end
-						
-						-- Travel
 						local underRockPos = targetPos - Vector3.new(0, TRAVEL_DEPTH, 0)
 						local travelDist = (rootPart.Position - underRockPos).Magnitude
 						local timeToTravel = travelDist / MOVEMENT_SPEED
 						local travelTween = TweenService:Create(rootPart, TweenInfo.new(timeToTravel, Enum.EasingStyle.Linear), {CFrame = CFrame.new(underRockPos)})
 						travelTween:Play()
-						
 						local arrived = false
 						travelTween.Completed:Connect(function() arrived = true end)
 						while not arrived do 
 							if not autoMineEnabled then travelTween:Cancel() break end 
 							task.wait(0.1) 
 						end
-						
 						if autoMineEnabled then
-							local canBeSeen = isSpotterNearby(targetPos)
-							if strictAvoidance and canBeSeen then
-								statusLabel.Text = "👁️ Spotted! Mining deep..."
-							else
-								statusLabel.Text = "⬆️ Approaching..."
-								local minePos = targetPos - Vector3.new(0, MINING_DEPTH, 0)
-								TweenService:Create(rootPart, TweenInfo.new(0.5), {CFrame = CFrame.new(minePos)}):Play()
-								task.wait(0.5)
-							end
+							statusLabel.Text = "⬆️ Approaching..."
+							local minePos = targetPos - Vector3.new(0, MINING_DEPTH, 0)
+							TweenService:Create(rootPart, TweenInfo.new(0.5), {CFrame = CFrame.new(minePos)}):Play()
+							task.wait(0.5)
 							
 							statusLabel.Text = "⛏️ Mining..."
 							while closestItem.Parent and autoMineEnabled do
+								if strictAvoidance and isMobTooClose(rootPart.Position) then
+									statusLabel.Text = "⚠️ MOB! ESCAPING!"
+									break -- Escape!
+								end
 								pcall(function() ReplicatedStorage.Shared.Packages.Knit.Services.ToolService.RF.ToolActivated:InvokeServer("Pickaxe") end)
 								task.wait(0.1)
 							end
@@ -686,24 +699,32 @@ task.spawn(function()
 						disableFlightPhysics(rootPart)
 					
 					-- ===================================
-					-- MODE B: LEGIT MODE (WALK ONLY)
+					-- MODE B: LEGIT MODE (FIXED VISUALS)
 					-- ===================================
 					else 
-						statusLabel.Text = "🏃 Walking to target..."
+						statusLabel.Text = "🏃 Walking..."
 						disableFlightPhysics(rootPart)
-						local arrived = followPath(targetPos)
+						
+						-- Execute Path
+						local arrived = traversePath(targetPos)
 						
 						if arrived and autoMineEnabled then
 							statusLabel.Text = "⛏️ Mining (Legit)..."
 							while closestItem.Parent and autoMineEnabled do
+								-- [[ REACTIVE DODGE ]]
+								if strictAvoidance and isMobTooClose(rootPart.Position) then
+									statusLabel.Text = "⚠️ MOB DETECTED! JUMPING!"
+									performPhysicsJump(player.Character.Humanoid, rootPart)
+									break
+								end
+								
 								pcall(function() ReplicatedStorage.Shared.Packages.Knit.Services.ToolService.RF.ToolActivated:InvokeServer("Pickaxe") end)
 								task.wait(0.1)
 							end
 						else
-							statusLabel.Text = "⚠️ Path Failed."
+							statusLabel.Text = "⚠️ Retrying..."
 							task.wait(0.5)
 						end
-						visualFolder:ClearAllChildren()
 					end
 					
 					isCurrentlyMining = false
@@ -740,4 +761,4 @@ end)
 
 task.wait(1)
 scanRocks()
-print("Robust Miner Loaded")
+print("Fixed Visualizer & Safety Loaded")
