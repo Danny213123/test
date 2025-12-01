@@ -1,5 +1,7 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.10)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.12)
+    - v1.12 UPDATE: Made the GUI Draggable.
+    - v1.11 UPDATE: Added 15s Combat Timeout (Prevents getting stuck on unreachable mobs).
     - v1.10 UPDATE: Added 60s Timeout per Ore (Prevents getting stuck on buggy ores).
     - v1.9 UPDATE: Fixed movement logic to walk to the EDGE of the radius, not the center.
     - Scans for ores in the "Rocks" folder
@@ -29,6 +31,7 @@ local RunService = game:GetService("RunService")
 local PathfindingService = game:GetService("PathfindingService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -37,13 +40,20 @@ local SCAN_DELAY = 1.0
 local MINING_RADIUS = 7.5
 local COMBAT_RADIUS = 15 
 local HIGHLIGHT_LIMIT = 20 
-local MAX_ORE_TIME = 60        -- Max time to spend on one ore before giving up
-local BLACKLIST_DURATION = 300 -- How long to ignore a timed-out ore (seconds)
+
+-- TIMEOUT SETTINGS
+local MAX_ORE_TIME = 60           -- Max time to spend on one ore before giving up
+local ORE_BLACKLIST_DURATION = 300 -- How long to ignore a timed-out ore
+
+local MAX_COMBAT_TIME = 15        -- Max time to try fighting a specific mob
+local COMBAT_BLACKLIST_DURATION = 60 -- How long to ignore a glitchy mob
 
 local activeHighlights = {} 
 local oreToggleStates = {} 
 local lastScanResults = {} 
+
 local oreBlacklist = {} -- Stores [oreInstance] = timestamp
+local mobBlacklist = {} -- Stores [mobModel] = timestamp
 
 local playerEspEnabled = false 
 local autoMineEnabled = false 
@@ -51,8 +61,10 @@ local wasAutoMineOnBeforeDeath = false -- State memory
 local isPausedForRespawn = false
 
 local currentMiningOre = nil 
-local currentOreStartTime = 0 -- Timer for the current ore
-local currentTargetMob = nil 
+local currentOreStartTime = 0 
+
+local currentCombatTarget = nil
+local currentCombatStartTime = 0
 
 -- Cleanup old GUI
 for _, g in ipairs(CoreGui:GetChildren()) do
@@ -69,6 +81,45 @@ local pathVisualsFolder = Instance.new("Folder")
 pathVisualsFolder.Name = "OrePaths"
 pathVisualsFolder.Parent = Workspace
 
+-- DRAGGABLE FUNCTION
+local function makeDraggable(gui)
+    local dragging
+    local dragInput
+    local dragStart
+    local startPos
+
+    local function update(input)
+        local delta = input.Position - dragStart
+        gui.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+
+    gui.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = gui.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    gui.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            update(input)
+        end
+    end)
+end
+
 -- 2. GUI CREATION
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "OreScannerGui"
@@ -83,7 +134,10 @@ MainFrame.Size = UDim2.new(0, 250, 0, 450)
 MainFrame.Position = UDim2.new(0.8, 0, 0.2, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 MainFrame.BorderSizePixel = 0
+MainFrame.Active = true -- Important for input handling
 MainFrame.Parent = ScreenGui
+
+makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner")
 UICorner.Parent = MainFrame
@@ -91,7 +145,7 @@ UICorner.Parent = MainFrame
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 30)
 Title.BackgroundTransparency = 1
-Title.Text = "v1.10 Ore Scanner + Auto" 
+Title.Text = "v1.12 Ore Scanner + Auto" 
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 18
@@ -297,7 +351,7 @@ end
 
 local function isValidOre(ore)
     -- Check Blacklist
-    if oreBlacklist[ore] and (tick() - oreBlacklist[ore] < BLACKLIST_DURATION) then
+    if oreBlacklist[ore] and (tick() - oreBlacklist[ore] < ORE_BLACKLIST_DURATION) then
         return false
     end
 
@@ -372,6 +426,11 @@ local function getNearbyMob()
     
     for _, model in ipairs(living:GetChildren()) do
         if model:IsA("Model") and model ~= char then
+            -- Check Mob Blacklist
+            if mobBlacklist[model] and (tick() - mobBlacklist[model] < COMBAT_BLACKLIST_DURATION) then
+                continue 
+            end
+
             if not Players:FindFirstChild(model.Name) then
                 local pivot = model:GetPivot()
                 local hum = model:FindFirstChild("Humanoid")
@@ -433,21 +492,37 @@ local function autoMineLoop()
             local nearbyMob = getNearbyMob()
             
             if nearbyMob then
-                updateStatus("COMBAT: Attacking " .. nearbyMob.Name)
-                if not char:FindFirstChild("Sword") and not char:FindFirstChild("Weapon") then
-                    equipSword()
+                -- Target Switch / Initialization Check
+                if nearbyMob ~= currentCombatTarget then
+                    currentCombatTarget = nearbyMob
+                    currentCombatStartTime = tick()
                 end
-                
-                local mobPos = nearbyMob:GetPivot().Position
-                humanoid:MoveTo(root.Position) 
-                faceTarget(mobPos)
-                attackTargetMob(nearbyMob)
-                
-                if (root.Position - mobPos).Magnitude > 5 then
-                    humanoid:MoveTo(mobPos)
+
+                -- Combat Timeout Check
+                if tick() - currentCombatStartTime > MAX_COMBAT_TIME then
+                    logDebug("COMBAT TIMEOUT: Blacklisting " .. nearbyMob.Name)
+                    mobBlacklist[nearbyMob] = tick()
+                    currentCombatTarget = nil
+                    -- Force skip the rest of the loop to re-scan next cycle immediately
+                else
+                    updateStatus("COMBAT: Attacking " .. nearbyMob.Name)
+                    if not char:FindFirstChild("Sword") and not char:FindFirstChild("Weapon") then
+                        equipSword()
+                    end
+                    
+                    local mobPos = nearbyMob:GetPivot().Position
+                    humanoid:MoveTo(root.Position) 
+                    faceTarget(mobPos)
+                    attackTargetMob(nearbyMob)
+                    
+                    if (root.Position - mobPos).Magnitude > 5 then
+                        humanoid:MoveTo(mobPos)
+                    end
+                    task.wait(0.1) 
+                    continue 
                 end
-                task.wait(0.1) 
-                continue 
+            else
+                currentCombatTarget = nil -- Reset if no mob found
             end
             
             -- 2. IMMEDIATE PROXIMITY OVERRIDE
@@ -456,7 +531,7 @@ local function autoMineLoop()
                 if isEnabled and lastScanResults[oreName] then
                     for _, ore in ipairs(lastScanResults[oreName].Instances) do
                         -- Ignore blacklisted ores even if close
-                        if oreBlacklist[ore] and (tick() - oreBlacklist[ore] < BLACKLIST_DURATION) then continue end
+                        if oreBlacklist[ore] and (tick() - oreBlacklist[ore] < ORE_BLACKLIST_DURATION) then continue end
                         
                         local pos = getOrePosition(ore)
                         if pos and (root.Position - pos).Magnitude <= MINING_RADIUS then
