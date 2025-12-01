@@ -1,5 +1,7 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.8)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.10)
+    - v1.10 UPDATE: Added 60s Timeout per Ore (Prevents getting stuck on buggy ores).
+    - v1.9 UPDATE: Fixed movement logic to walk to the EDGE of the radius, not the center.
     - Scans for ores in the "Rocks" folder
     - ESP Highlights + Radius Visualization
     - Pathfinding Visualizer (Cyan = Walk, Purple = Jump, Red = Fallback)
@@ -32,13 +34,16 @@ local LocalPlayer = Players.LocalPlayer
 
 -- 1. SETTINGS & STATE
 local SCAN_DELAY = 1.0 
-local MINING_RADIUS = 10 
+local MINING_RADIUS = 7.5
 local COMBAT_RADIUS = 15 
 local HIGHLIGHT_LIMIT = 20 
+local MAX_ORE_TIME = 60        -- Max time to spend on one ore before giving up
+local BLACKLIST_DURATION = 300 -- How long to ignore a timed-out ore (seconds)
 
 local activeHighlights = {} 
 local oreToggleStates = {} 
 local lastScanResults = {} 
+local oreBlacklist = {} -- Stores [oreInstance] = timestamp
 
 local playerEspEnabled = false 
 local autoMineEnabled = false 
@@ -46,6 +51,7 @@ local wasAutoMineOnBeforeDeath = false -- State memory
 local isPausedForRespawn = false
 
 local currentMiningOre = nil 
+local currentOreStartTime = 0 -- Timer for the current ore
 local currentTargetMob = nil 
 
 -- Cleanup old GUI
@@ -85,7 +91,7 @@ UICorner.Parent = MainFrame
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 30)
 Title.BackgroundTransparency = 1
-Title.Text = "v1.8 Ore Scanner + Auto" 
+Title.Text = "v1.10 Ore Scanner + Auto" 
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 18
@@ -290,6 +296,11 @@ local function isOreOccupied(orePos)
 end
 
 local function isValidOre(ore)
+    -- Check Blacklist
+    if oreBlacklist[ore] and (tick() - oreBlacklist[ore] < BLACKLIST_DURATION) then
+        return false
+    end
+
     local pos = getOrePosition(ore)
     if not pos then return false end
     
@@ -444,10 +455,16 @@ local function autoMineLoop()
             for oreName, isEnabled in pairs(oreToggleStates) do
                 if isEnabled and lastScanResults[oreName] then
                     for _, ore in ipairs(lastScanResults[oreName].Instances) do
+                        -- Ignore blacklisted ores even if close
+                        if oreBlacklist[ore] and (tick() - oreBlacklist[ore] < BLACKLIST_DURATION) then continue end
+                        
                         local pos = getOrePosition(ore)
                         if pos and (root.Position - pos).Magnitude <= MINING_RADIUS then
                             if not isOreOccupied(pos) then 
-                                currentMiningOre = ore
+                                if currentMiningOre ~= ore then
+                                    currentMiningOre = ore
+                                    currentOreStartTime = tick() -- Reset timer for new ore
+                                end
                                 foundNearby = true
                                 break
                             end
@@ -458,14 +475,25 @@ local function autoMineLoop()
             end
 
             -- 3. MINING LOGIC
-            if currentMiningOre and (not currentMiningOre.Parent) then
-                logDebug("Ore broken/lost. Searching...")
-                currentMiningOre = nil
+            if currentMiningOre then
+                -- Check if ore is broken or lost
+                if not currentMiningOre.Parent then
+                    logDebug("Ore broken/lost. Searching...")
+                    currentMiningOre = nil
+                -- Check for Timeout
+                elseif tick() - currentOreStartTime > MAX_ORE_TIME then
+                    logDebug("TIMEOUT: Blacklisting " .. currentMiningOre.Name)
+                    oreBlacklist[currentMiningOre] = tick()
+                    currentMiningOre = nil
+                end
             end
 
             if not currentMiningOre then
                 updateStatus("Scanning...")
                 currentMiningOre = getBestOre()
+                if currentMiningOre then
+                    currentOreStartTime = tick() -- Start timer for new target
+                end
             end
             
             local targetOre = currentMiningOre
@@ -486,15 +514,24 @@ local function autoMineLoop()
                         mineTarget(targetOre)
                         task.wait(0.1)
                     else
+                        -- == NEW LOGIC: MOVE TO EDGE, NOT CENTER ==
                         updateStatus("Moving to " .. targetOre.Name)
                         
-                        -- PATHFINDING WITH ROBUST FAILSAFES
+                        -- Calculate direction from player to ore
+                        local directionToOre = (targetPos - root.Position).Unit
+                        local vectorFromOre = (root.Position - targetPos).Unit
+                        
+                        -- Target the EDGE of the radius (Radius - 2 studs safety buffer)
+                        -- This prevents walking deep into the ore center
+                        local approachPos = targetPos + (vectorFromOre * (MINING_RADIUS - 2))
+
                         local path = PathfindingService:CreatePath({
                             AgentRadius = 2.0, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20, [Enum.Material.Air] = 4 }
                         })
                         
                         local success = pcall(function()
-                            path:ComputeAsync(root.Position, targetPos)
+                            -- Compute path to the APPROACH POSITION (Edge), not the center
+                            path:ComputeAsync(root.Position, approachPos)
                         end)
                         
                         if success and path.Status == Enum.PathStatus.Success then
@@ -509,7 +546,9 @@ local function autoMineLoop()
                                 if getNearbyMob() then break end
                                 if (root.Position - targetPos).Magnitude <= MINING_RADIUS then break end -- Close enough!
                                 
-                                -- Status Update for debugging
+                                -- Timeout check inside movement loop
+                                if tick() - currentOreStartTime > MAX_ORE_TIME then break end
+
                                 updateStatus("Moving to " .. targetOre.Name .. " ("..i.."/"..#waypoints..")")
                                 
                                 if wp.Action == Enum.PathWaypointAction.Jump then
@@ -545,8 +584,8 @@ local function autoMineLoop()
                                 if connection then connection:Disconnect() end
                             end
                         else
-                            -- Path failed? Try direct move for a bit
-                            humanoid:MoveTo(targetPos)
+                            -- Fallback: Walk directly to approachPos if path fails
+                            humanoid:MoveTo(approachPos)
                             task.wait(0.5)
                         end
                     end
