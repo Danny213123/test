@@ -1,17 +1,15 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.24)
-    - v1.24 UPDATE: Reduced Dynamic Path Check Frequency (Fixed movement stuttering).
-        - Now checks for better ores every 15 waypoints instead of 5.
-    - v1.23 UPDATE: Dual-Radius Availability System (Red/Yellow/Green Status).
-    - v1.23 UPDATE: Prioritizes Green ores over Yellow. Aborts path if target turns Red.
-    - v1.22 UPDATE: Fixed "Impossible Ore" Bug.
-    - v1.21 UPDATE: Reverted to standard walking.
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.32)
+    - v1.32 UPDATE: Simultaneous Dropdowns (Target & Priority can stay open together).
+    - v1.32 UPDATE: Enlarged Debug Console (Taller view for better log reading).
+    - v1.31 UPDATE: "Priority System" - Two Separate Dropdowns.
+    - v1.31 UPDATE: Strict Priority Pathfinding.
+    - v1.30 UPDATE: Stringent Blacklist Logic.
+    - v1.29 UPDATE: Detailed Debugging.
     - Scans for ores in the "Rocks" folder
     - ESP Highlights + Radius Visualization
-    - EXCLUSION: Ignores "Island2GoblinCave"
     - FEATURE: Player ESP Toggle & AUTO MINE Toggle
     - FEATURE: AUTO COMBAT (Switches to Sword if mob nearby)
-    - FIX: Robust Scanning (Uses GetDescendants + Safety Checks)
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -26,21 +24,22 @@ local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
 -- 1. SETTINGS & STATE
-local SCAN_DELAY = 0.5 -- Faster scanning for real-time status updates
+local SCAN_DELAY = 0.5 
 local MINING_RADIUS = 7.5           -- Interaction range
-local PLAYER_DETECTION_RADIUS = 25  -- Player detection range (The "Larger" radius)
+local PLAYER_DETECTION_RADIUS = 25  -- Player detection range
 local SURFACE_STOP_DISTANCE = 3.5   -- Stop distance from ore surface
 local COMBAT_RADIUS = 15 
 local HIGHLIGHT_LIMIT = 30 
 
 -- TIMEOUT SETTINGS
-local MAX_ORE_TIME = 60           
 local ORE_BLACKLIST_DURATION = 300 
 local MAX_COMBAT_TIME = 15        
 local COMBAT_BLACKLIST_DURATION = 60 
+local TIMEOUT_PROXIMITY_THRESHOLD = 40 
 
 local activeHighlights = {} 
 local oreToggleStates = {} 
+local orePriorityList = {} 
 local lastScanResults = {} 
 
 local oreBlacklist = {} 
@@ -50,8 +49,16 @@ local playerEspEnabled = false
 local autoMineEnabled = false 
 local currentMiningOre = nil 
 local currentOreStartTime = 0 
+local currentMaxTime = 60 
+local lastOreHealth = 0   
+
 local currentCombatTarget = nil
 local currentCombatStartTime = 0
+
+local lastPathUpdate = 0 
+-- UI States for Dropdowns
+local isTargetDropdownOpen = false 
+local isPriorityDropdownOpen = false
 
 -- Cleanup old GUI
 for _, g in ipairs(CoreGui:GetChildren()) do
@@ -94,43 +101,85 @@ if not ScreenGui.Parent then ScreenGui.Parent = LocalPlayer:WaitForChild("Player
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "ScannerFrame"
-MainFrame.Size = UDim2.new(0, 250, 0, 450)
-MainFrame.Position = UDim2.new(0.8, 0, 0.2, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+-- v1.32: Taller Frame
+MainFrame.Size = UDim2.new(0, 260, 0, 600) 
+MainFrame.Position = UDim2.new(0.8, 0, 0.1, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 MainFrame.BorderSizePixel = 0
 MainFrame.Active = true 
 MainFrame.Parent = ScreenGui
 makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.24 Ore Scanner + Auto"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 18; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.32 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
-local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -35, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
+local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
--- Controls
+-- Controls Container
+local ControlsContainer = Instance.new("Frame"); ControlsContainer.Name = "Controls"; ControlsContainer.Size = UDim2.new(1, 0, 0, 80); ControlsContainer.Position = UDim2.new(0, 0, 0, 35); ControlsContainer.BackgroundTransparency = 1; ControlsContainer.Parent = MainFrame
+
 local function createControl(name, yPos, text, color)
-    local f = Instance.new("Frame"); f.Name = name; f.Size = UDim2.new(1, -10, 0, 30); f.Position = UDim2.new(0, 5, 0, yPos); f.BackgroundColor3 = Color3.fromRGB(40, 40, 40); f.Parent = MainFrame
+    local f = Instance.new("Frame"); f.Name = name; f.Size = UDim2.new(1, -10, 0, 30); f.Position = UDim2.new(0, 5, 0, yPos); f.BackgroundColor3 = Color3.fromRGB(35, 35, 35); f.Parent = ControlsContainer
     Instance.new("UICorner", f).CornerRadius = UDim.new(0, 4)
-    local l = Instance.new("TextLabel"); l.Size = UDim2.new(0.65, 0, 1, 0); l.Position = UDim2.new(0, 5, 0, 0); l.BackgroundTransparency = 1; l.Text = text; l.TextXAlignment = Enum.TextXAlignment.Left; l.TextColor3 = color; l.Font = Enum.Font.GothamBold; l.TextSize = 14; l.Parent = f
+    local l = Instance.new("TextLabel"); l.Size = UDim2.new(0.65, 0, 1, 0); l.Position = UDim2.new(0, 5, 0, 0); l.BackgroundTransparency = 1; l.Text = text; l.TextXAlignment = Enum.TextXAlignment.Left; l.TextColor3 = color; l.Font = Enum.Font.GothamBold; l.TextSize = 13; l.Parent = f
     local b = Instance.new("TextButton"); b.Size = UDim2.new(0.3, 0, 0.8, 0); b.Position = UDim2.new(0.68, 0, 0.1, 0); b.BackgroundColor3 = Color3.fromRGB(60, 60, 60); b.Text = "OFF"; b.TextColor3 = Color3.fromRGB(255, 255, 255); b.Font = Enum.Font.GothamBold; b.TextSize = 11; b.Parent = f
     Instance.new("UICorner", b).CornerRadius = UDim.new(0, 4)
     return b
 end
 
-local PE_Toggle = createControl("PlayerESP_Control", 35, "Player ESP", Color3.fromRGB(255, 100, 100))
-local AM_Toggle = createControl("AutoMine_Control", 70, "Auto Mine/Attack", Color3.fromRGB(100, 255, 255))
+local PE_Toggle = createControl("PlayerESP_Control", 0, "Player ESP", Color3.fromRGB(255, 80, 80))
+local AM_Toggle = createControl("AutoMine_Control", 35, "Auto Mine/Attack", Color3.fromRGB(80, 255, 255))
 
-local ScrollingFrame = Instance.new("ScrollingFrame"); ScrollingFrame.Size = UDim2.new(1, -10, 0, 150); ScrollingFrame.Position = UDim2.new(0, 5, 0, 105); ScrollingFrame.BackgroundTransparency = 1; ScrollingFrame.ScrollBarThickness = 4; ScrollingFrame.Parent = MainFrame
-local UIListLayout = Instance.new("UIListLayout"); UIListLayout.Padding = UDim.new(0, 5); UIListLayout.SortOrder = Enum.SortOrder.Name; UIListLayout.Parent = ScrollingFrame
+-- === DROPDOWN 1: TARGET SELECTION ===
+local TargetHeader = Instance.new("Frame"); TargetHeader.Size = UDim2.new(1, -10, 0, 25); TargetHeader.Position = UDim2.new(0, 5, 0, 115); TargetHeader.BackgroundColor3 = Color3.fromRGB(45, 45, 45); TargetHeader.Parent = MainFrame; Instance.new("UICorner", TargetHeader).CornerRadius = UDim.new(0, 4)
+local TargetBtn = Instance.new("TextButton"); TargetBtn.Size = UDim2.new(1, 0, 1, 0); TargetBtn.BackgroundTransparency = 1; TargetBtn.Text = "Target Selection ▼"; TargetBtn.TextColor3 = Color3.fromRGB(200, 200, 200); TargetBtn.Font = Enum.Font.GothamBold; TargetBtn.TextSize = 12; TargetBtn.Parent = TargetHeader
 
-local StatusLabel = Instance.new("TextLabel"); StatusLabel.Name = "StatusLabel"; StatusLabel.Size = UDim2.new(1, -10, 0, 20); StatusLabel.Position = UDim2.new(0, 5, 0, 260); StatusLabel.BackgroundTransparency = 0.8; StatusLabel.BackgroundColor3 = Color3.new(0,0,0); StatusLabel.Text = "Status: Idle"; StatusLabel.TextColor3 = Color3.fromRGB(200, 200, 200); StatusLabel.Font = Enum.Font.Gotham; StatusLabel.TextSize = 12; StatusLabel.Parent = MainFrame
+local TargetList = Instance.new("ScrollingFrame"); TargetList.Name = "TargetList"; TargetList.Size = UDim2.new(1, -10, 0, 0); TargetList.Position = UDim2.new(0, 5, 0, 145); TargetList.BackgroundTransparency = 1; TargetList.ScrollBarThickness = 2; TargetList.Visible = false; TargetList.Parent = MainFrame
+local TargetLayout = Instance.new("UIListLayout"); TargetLayout.Padding = UDim.new(0, 2); TargetLayout.SortOrder = Enum.SortOrder.Name; TargetLayout.Parent = TargetList
 
-local DebugFrame = Instance.new("ScrollingFrame"); DebugFrame.Name = "DebugConsole"; DebugFrame.Size = UDim2.new(1, -10, 0, 150); DebugFrame.Position = UDim2.new(0, 5, 0, 285); DebugFrame.BackgroundTransparency = 0.5; DebugFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10); DebugFrame.ScrollBarThickness = 2; DebugFrame.Parent = MainFrame
+TargetBtn.MouseButton1Click:Connect(function()
+    isTargetDropdownOpen = not isTargetDropdownOpen
+    TargetList.Visible = isTargetDropdownOpen
+    if isTargetDropdownOpen then
+        TargetList.Size = UDim2.new(1, -10, 0, 120)
+        TargetBtn.Text = "Target Selection ▼"
+        -- v1.32: Do NOT close other dropdown
+    else
+        TargetList.Size = UDim2.new(1, -10, 0, 0)
+        TargetBtn.Text = "Target Selection ▶"
+    end
+end)
+
+-- === DROPDOWN 2: PRIORITY REORDER ===
+local PriorityHeader = Instance.new("Frame"); PriorityHeader.Name = "PriorityHeader"; PriorityHeader.Size = UDim2.new(1, -10, 0, 25); PriorityHeader.Position = UDim2.new(0, 5, 0, 270); PriorityHeader.BackgroundColor3 = Color3.fromRGB(45, 45, 45); PriorityHeader.Parent = MainFrame; Instance.new("UICorner", PriorityHeader).CornerRadius = UDim.new(0, 4)
+local PriorityBtn = Instance.new("TextButton"); PriorityBtn.Name = "PriorityBtn"; PriorityBtn.Size = UDim2.new(1, 0, 1, 0); PriorityBtn.BackgroundTransparency = 1; PriorityBtn.Text = "Priority Reorder ▶"; PriorityBtn.TextColor3 = Color3.fromRGB(200, 200, 200); PriorityBtn.Font = Enum.Font.GothamBold; PriorityBtn.TextSize = 12; PriorityBtn.Parent = PriorityHeader
+
+local PriorityList = Instance.new("ScrollingFrame"); PriorityList.Name = "PriorityList"; PriorityList.Size = UDim2.new(1, -10, 0, 0); PriorityList.Position = UDim2.new(0, 5, 0, 300); PriorityList.BackgroundTransparency = 1; PriorityList.ScrollBarThickness = 2; PriorityList.Visible = false; PriorityList.Parent = MainFrame
+local PriorityLayout = Instance.new("UIListLayout"); PriorityLayout.Padding = UDim.new(0, 2); PriorityLayout.SortOrder = Enum.SortOrder.LayoutOrder; PriorityLayout.Parent = PriorityList
+
+PriorityBtn.MouseButton1Click:Connect(function()
+    isPriorityDropdownOpen = not isPriorityDropdownOpen
+    PriorityList.Visible = isPriorityDropdownOpen
+    if isPriorityDropdownOpen then
+        PriorityList.Size = UDim2.new(1, -10, 0, 120)
+        PriorityBtn.Text = "Priority Reorder ▼"
+        -- v1.32: Do NOT close other dropdown
+    else
+        PriorityList.Size = UDim2.new(1, -10, 0, 0)
+        PriorityBtn.Text = "Priority Reorder ▶"
+    end
+end)
+
+-- FOOTER (Status & Debug)
+local StatusLabel = Instance.new("TextLabel"); StatusLabel.Name = "StatusLabel"; StatusLabel.Size = UDim2.new(1, -10, 0, 20); StatusLabel.Position = UDim2.new(0, 5, 0, 430); StatusLabel.BackgroundTransparency = 0.8; StatusLabel.BackgroundColor3 = Color3.new(0,0,0); StatusLabel.Text = "Status: Idle"; StatusLabel.TextColor3 = Color3.fromRGB(200, 200, 200); StatusLabel.Font = Enum.Font.Gotham; StatusLabel.TextSize = 11; StatusLabel.Parent = MainFrame
+
+-- v1.32: Enlarged Debug Console
+local DebugFrame = Instance.new("ScrollingFrame"); DebugFrame.Name = "DebugConsole"; DebugFrame.Size = UDim2.new(1, -10, 0, 130); DebugFrame.Position = UDim2.new(0, 5, 0, 455); DebugFrame.BackgroundTransparency = 0.5; DebugFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10); DebugFrame.ScrollBarThickness = 2; DebugFrame.Parent = MainFrame
 local DebugLayout = Instance.new("UIListLayout"); DebugLayout.Padding = UDim.new(0, 2); DebugLayout.Parent = DebugFrame
 DebugLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function() DebugFrame.CanvasSize = UDim2.new(0, 0, 0, DebugLayout.AbsoluteContentSize.Y); DebugFrame.CanvasPosition = Vector2.new(0, DebugLayout.AbsoluteContentSize.Y) end)
 
 local function logDebug(msg)
-    local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1, 0, 0, 15); lbl.BackgroundTransparency = 1; lbl.Text = "["..os.date("%X").."] " .. msg; lbl.TextColor3 = Color3.fromRGB(180, 180, 180); lbl.Font = Enum.Font.Code; lbl.TextSize = 10; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = DebugFrame
+    local lbl = Instance.new("TextLabel"); lbl.Size = UDim2.new(1, 0, 0, 12); lbl.BackgroundTransparency = 1; lbl.Text = "["..os.date("%X").."] " .. msg; lbl.TextColor3 = Color3.fromRGB(150, 150, 150); lbl.Font = Enum.Font.Code; lbl.TextSize = 10; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.Parent = DebugFrame
     if #DebugFrame:GetChildren() > 50 then local c = DebugFrame:GetChildren(); for i, ch in ipairs(c) do if ch:IsA("TextLabel") then ch:Destroy(); break end end end
 end
 
@@ -183,48 +232,74 @@ local function isOreFullHealth(ore)
     return (h and m) and h >= m or true
 end
 
--- V1.23: ADVANCED AVAILABILITY CHECK
+-- PRIORITY MANAGEMENT
+local function movePriority(oreName, direction)
+    local idx = table.find(orePriorityList, oreName)
+    if not idx then return end
+    
+    if direction == -1 and idx > 1 then
+        -- Move Up
+        table.remove(orePriorityList, idx)
+        table.insert(orePriorityList, idx - 1, oreName)
+    elseif direction == 1 and idx < #orePriorityList then
+        -- Move Down
+        table.remove(orePriorityList, idx)
+        table.insert(orePriorityList, idx + 1, oreName)
+    end
+    -- Trigger refresh (indirectly via loop)
+end
+
+-- V1.26: TARGET SETTER & TIMEOUT CALCULATOR
+local function setTarget(ore)
+    currentMiningOre = ore
+    currentOreStartTime = tick()
+    
+    local h = ore:GetAttribute("Health")
+    lastOreHealth = h or 999999
+    
+    -- Calculate Travel Distance
+    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local dist = 100
+    if root and ore then
+        local pos = getOrePosition(ore)
+        if pos then dist = (root.Position - pos).Magnitude end
+    end
+    
+    -- DYNAMIC TIMEOUT: (Distance / Speed) + Buffer
+    local travelTime = (dist / 12) + 20 
+    currentMaxTime = travelTime
+    
+    StatusLabel.Text = "Status: Target " .. ore.Name .. " ("..math.floor(travelTime).."s)"
+    logDebug("Target set: " .. ore.Name .. " (Dist: " .. math.floor(dist) .. ")")
+end
+
 -- Returns: "RED" (Blocked), "YELLOW" (Caution), "GREEN" (Free)
 local function getOreStatus(ore)
     local orePos = getOrePosition(ore)
     if not orePos then return "RED" end
-    
     local isFull = isOreFullHealth(ore)
     local playerNearby = false
-    
     local living = Workspace:FindFirstChild("Living")
     if living then
         for _, model in ipairs(living:GetChildren()) do
             if model and model.Parent and model:IsA("Model") and Players:FindFirstChild(model.Name) and model.Name ~= LocalPlayer.Name then
                 local pivot = model:GetPivot()
-                if pivot and (pivot.Position - orePos).Magnitude <= PLAYER_DETECTION_RADIUS then
-                    playerNearby = true
-                    break
-                end
+                if pivot and (pivot.Position - orePos).Magnitude <= PLAYER_DETECTION_RADIUS then playerNearby = true; break end
             end
         end
     end
-    
     if playerNearby then
-        if not isFull then
-            return "RED" -- Player is nearby AND ore is damaged (Active Mining)
-        else
-            return "YELLOW" -- Player is nearby BUT ore is healthy (Camping/AFK)
-        end
+        if not isFull then return "RED" else return "YELLOW" end
     else
-        return "GREEN" -- No players nearby
+        return "GREEN"
     end
 end
 
 local function isValidOre(ore)
     if oreBlacklist[ore] and (tick() - oreBlacklist[ore] < ORE_BLACKLIST_DURATION) then return false end
     if not ore.Parent then return false end
-    
-    -- V1.23: Use Status Logic
     local status = getOreStatus(ore)
-    
-    if status == "RED" then return false end -- Never go to RED ores
-    -- Allow YELLOW and GREEN
+    if status == "RED" then return false end 
     return true
 end
 
@@ -257,12 +332,13 @@ local function getNearbyMob()
     local char = LocalPlayer.Character; if not char then return nil end
     local root = char:FindFirstChild("HumanoidRootPart"); if not root then return nil end
     local living = Workspace:FindFirstChild("Living"); if not living then return nil end
-    
     local closestMob = nil; local closestDist = COMBAT_RADIUS 
     for _, model in ipairs(living:GetChildren()) do
         if model:IsA("Model") and model ~= char then
             if mobBlacklist[model] and (tick() - mobBlacklist[model] < COMBAT_BLACKLIST_DURATION) then continue end
             if not Players:FindFirstChild(model.Name) then
+                if not model:FindFirstChild("MobBox") then continue end -- Strict check
+
                 local pivot = model:GetPivot(); local hum = model:FindFirstChild("Humanoid")
                 if pivot and hum and hum.Health > 0 then
                     local dist = (pivot.Position - root.Position).Magnitude
@@ -275,17 +351,22 @@ local function getNearbyMob()
 end
 
 -- 6. AUTO LOOP (MINE + COMBAT)
--- v1.23 UPDATE: PRIORITY ORE SELECTION (Green > Yellow)
+-- v1.31 UPDATE: STRICT PRIORITY LOOP
 local function getBestOre()
-    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not root then return nil end
+    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart"); if not root then return nil end
     
-    local greenCandidates = {}
-    local yellowCandidates = {}
+    logDebug("--- Scanning (Priority Mode) ---")
     
-    -- 1. Gather & Bucket
-    for oreName, isEnabled in pairs(oreToggleStates) do
-        if isEnabled and lastScanResults[oreName] then
+    -- Iterate through defined priority list
+    for _, oreName in ipairs(orePriorityList) do
+        -- Only check if this specific ore type is enabled
+        if oreToggleStates[oreName] and lastScanResults[oreName] then
+            
+            -- Gather candidates for THIS ore type only
+            local greenCandidates = {}
+            local yellowCandidates = {}
+            local count = 0
+            
             for _, ore in ipairs(lastScanResults[oreName].Instances) do
                 if isValidOre(ore) then
                     local pos = getOrePosition(ore)
@@ -293,55 +374,50 @@ local function getBestOre()
                         local dist = (root.Position - pos).Magnitude
                         local status = getOreStatus(ore)
                         local entry = {Ore = ore, Pos = pos, Dist = dist}
-                        
-                        if status == "GREEN" then
-                            table.insert(greenCandidates, entry)
-                        else
-                            table.insert(yellowCandidates, entry)
-                        end
+                        if status == "GREEN" then table.insert(greenCandidates, entry) else table.insert(yellowCandidates, entry) end
+                        count = count + 1
                     end
                 end
             end
-        end
-    end
-    
-    -- 2. Helper to find best from a list using Pathfinding
-    local function selectFromList(list)
-        table.sort(list, function(a, b) return a.Dist < b.Dist end)
-        local best = nil
-        local minWps = math.huge
-        local checkLimit = math.min(5, #list)
-        
-        for i = 1, checkLimit do
-            local entry = list[i]
-            local path = PathfindingService:CreatePath({AgentRadius = 3.0, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20, [Enum.Material.Air] = 4 }})
-            local success = pcall(function() path:ComputeAsync(root.Position, entry.Pos) end)
-            if success and path.Status == Enum.PathStatus.Success then
-                local wps = #path:GetWaypoints()
-                if wps < minWps then
-                    minWps = wps
-                    best = entry.Ore
+            
+            if count > 0 then
+                -- Helper to find best from list (copy from previous version)
+                local function selectFromList(list)
+                    table.sort(list, function(a, b) return a.Dist < b.Dist end)
+                    local best = nil; local minWps = math.huge; local checkLimit = math.min(10, #list) -- Check fewer per type for speed
+                    for i = 1, checkLimit do
+                        local entry = list[i]
+                        local path = PathfindingService:CreatePath({AgentRadius = 3.0, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20, [Enum.Material.Air] = 4 }})
+                        local success = pcall(function() path:ComputeAsync(root.Position, entry.Pos) end)
+                        if success and path.Status == Enum.PathStatus.Success then
+                            local wps = #path:GetWaypoints(); if wps < minWps then minWps = wps; best = entry.Ore end
+                        end
+                        if i % 5 == 0 then task.wait() end
+                    end
+                    if not best and #list > 0 then local closest = list[1]; if closest.Dist < 25 and isSafeToWalk(closest.Pos) then best = closest.Ore end end
+                    return best
+                end
+                
+                -- Check Green candidates for this priority level
+                local found = selectFromList(greenCandidates)
+                if found then 
+                    logDebug("Priority Hit: " .. oreName)
+                    return found 
+                end
+                
+                -- Check Yellow candidates for this priority level
+                found = selectFromList(yellowCandidates)
+                if found then 
+                    logDebug("Priority Hit (Yellow): " .. oreName)
+                    return found 
                 end
             end
+            -- If nothing found for this oreName, continue to next in priority list
         end
-        
-        -- Fallback to close & safe check
-        if not best and #list > 0 then
-            local closest = list[1]
-            if closest.Dist < 25 and isSafeToWalk(closest.Pos) then best = closest.Ore end
-        end
-        return best
     end
     
-    -- 3. Prioritize Green
-    local chosenOre = selectFromList(greenCandidates)
-    
-    -- 4. If no green reachable, try Yellow
-    if not chosenOre then
-        chosenOre = selectFromList(yellowCandidates)
-    end
-    
-    return chosenOre
+    logDebug("No reachable ores found.")
+    return nil
 end
 
 local function updateStatus(text) StatusLabel.Text = "Status: " .. text end
@@ -373,49 +449,65 @@ local function autoMineLoop()
                 currentCombatTarget = nil
             end
             
-            -- 2. NEARBY ORE CHECK (Optimization)
+            -- 2. NEARBY ORE CHECK (Prioritize Current Target if Close)
+            -- Note: In v1.31, we rely heavily on the main scanner, but immediate overrides are ok if same priority
             local foundNearby = false
-            for oreName, isEnabled in pairs(oreToggleStates) do
-                if isEnabled and lastScanResults[oreName] then
-                    for _, ore in ipairs(lastScanResults[oreName].Instances) do
-                        if oreBlacklist[ore] and (tick() - oreBlacklist[ore] < ORE_BLACKLIST_DURATION) then continue end
-                        local pos = getOrePosition(ore)
-                        if pos and (root.Position - pos).Magnitude <= MINING_RADIUS then
-                            -- Only mine if not RED status (Even if close)
-                            if getOreStatus(ore) ~= "RED" then 
-                                if currentMiningOre ~= ore then currentMiningOre = ore; currentOreStartTime = tick() end
-                                foundNearby = true; break
-                            end
-                        end
-                    end
+            -- Simple check: Is current target still valid and close? Keep it.
+            if currentMiningOre and isValidOre(currentMiningOre) then
+                local p = getOrePosition(currentMiningOre)
+                if p and (root.Position - p).Magnitude <= MINING_RADIUS then
+                    foundNearby = true
                 end
-                if foundNearby then break end
+            end
+            -- Only scan nearby if we don't have a mining target
+            if not foundNearby then
+               -- Let the main targeting logic handle it to respect priority
             end
 
             -- 3. TARGETING
             if currentMiningOre then
+                -- V1.26: HEALTH MONITORING (Extends Timeout)
+                local currentH = currentMiningOre:GetAttribute("Health") or 0
+                if currentH < lastOreHealth then
+                    lastOreHealth = currentH
+                    currentOreStartTime = tick() -- Reset timer
+                    currentMaxTime = 30 -- Short buffer for active mining
+                end
+
+                -- V1.30: STRINGENT BLACKLIST PROXIMITY CHECK
+                local distToOre = 9999
+                local oreP = getOrePosition(currentMiningOre)
+                if oreP then distToOre = (root.Position - oreP).Magnitude end
+
                 if not currentMiningOre.Parent then logDebug("Ore lost."); currentMiningOre = nil
-                elseif tick() - currentOreStartTime > MAX_ORE_TIME then logDebug("TIMEOUT: Blacklisting " .. currentMiningOre.Name); oreBlacklist[currentMiningOre] = tick(); currentMiningOre = nil 
-                -- V1.23: Status Change Check
+                elseif tick() - currentOreStartTime > currentMaxTime then 
+                    
+                    -- V1.30: Only blacklist if we are CLOSE to the ore (Stuck or unable to mine)
+                    if distToOre < TIMEOUT_PROXIMITY_THRESHOLD then
+                        logDebug("TIMEOUT (Near): Blacklisting " .. currentMiningOre.Name)
+                        oreBlacklist[currentMiningOre] = tick(); currentMiningOre = nil 
+                    else
+                        -- We are far away, just reset timer (Travel time extension)
+                        currentOreStartTime = tick()
+                    end
+
                 elseif getOreStatus(currentMiningOre) == "RED" then
                     logDebug("Target became BLOCKED. Switching..."); currentMiningOre = nil
                 end
             end
 
-            if not currentMiningOre then updateStatus("Scanning..."); currentMiningOre = getBestOre(); if currentMiningOre then currentOreStartTime = tick() end end
+            if not currentMiningOre then updateStatus("Scanning..."); local best = getBestOre(); if best then setTarget(best) end end
             
             local targetOre = currentMiningOre
             if targetOre then
                 local targetPos = getOrePosition(targetOre)
                 if targetPos then
-                    -- DISTANCE CHECKS
                     local surfaceDist = getSurfaceDistance(root, targetOre)
                     local centerDist = (root.Position - targetPos).Magnitude
                     
-                    -- MINE if close enough to center OR close enough to surface
                     if centerDist <= MINING_RADIUS or surfaceDist <= SURFACE_STOP_DISTANCE + 1.0 then
                         updateStatus("Mining " .. targetOre.Name)
-                        humanoid:MoveTo(root.Position) -- Stop moving
+                        humanoid:MoveTo(root.Position) 
                         if not char:FindFirstChild("Pickaxe") then equipPickaxe() end
                         faceTarget(targetPos)
                         mineTarget(targetOre)
@@ -423,7 +515,6 @@ local function autoMineLoop()
                     else
                         updateStatus("Moving to " .. targetOre.Name)
                         
-                        -- PATHFINDING
                         local path = PathfindingService:CreatePath({
                             AgentRadius = 3.0, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20, [Enum.Material.Air] = 4 }
                         })
@@ -437,19 +528,15 @@ local function autoMineLoop()
                                 
                                 if not autoMineEnabled or not currentMiningOre or not currentMiningOre.Parent then break end
                                 if getNearbyMob() then break end
-                                if tick() - currentOreStartTime > MAX_ORE_TIME then break end
+                                if tick() - currentOreStartTime > currentMaxTime then break end
                                 if humanoid.Health <= 0 then break end
-
-                                -- V1.23: CONSTANT STATUS CHECK
                                 if getOreStatus(targetOre) == "RED" then break end
 
-                                -- Dynamic Switching
-                                if i % 15 == 0 then -- Changed from 5 to 15 to reduce stutter
+                                if i % 15 == 0 then 
                                     local potentialNewTarget = getBestOre()
                                     if potentialNewTarget and potentialNewTarget ~= currentMiningOre then
-                                        updateStatus("Found better target! Switching...")
-                                        currentMiningOre = potentialNewTarget
-                                        currentOreStartTime = tick()
+                                        updateStatus("Found higher priority target! Switching...")
+                                        setTarget(potentialNewTarget)
                                         break
                                     end
                                 end
@@ -476,7 +563,6 @@ local function autoMineLoop()
                                 if connection then connection:Disconnect() end
                             end
                         else
-                            -- FALLBACK WITH SAFETY CHECK
                             if isSafeToWalk(targetPos) then
                                 if surfaceDist > SURFACE_STOP_DISTANCE then
                                     humanoid:MoveTo(targetPos)
@@ -545,14 +631,6 @@ local function updateEntityESP()
     local living = Workspace:FindFirstChild("Living"); if not living then return end
     local char = LocalPlayer.Character; local root = char and char:FindFirstChild("HumanoidRootPart")
     
-    if root then
-        -- V1.23: Show Detection Radius visually
-        local detectVis = root:FindFirstChild("PlayerDetectRadius")
-        if not detectVis then
-            detectVis = Instance.new("CylinderHandleAdornment", root); detectVis.Name = "PlayerDetectRadius"; detectVis.Adornee = root; detectVis.Height = 0.5; detectVis.Radius = PLAYER_DETECTION_RADIUS; detectVis.CFrame = CFrame.new(0, -2.8, 0) * CFrame.Angles(math.rad(90), 0, 0); detectVis.Transparency = 0.9; detectVis.Color3 = Color3.fromRGB(255, 100, 100); detectVis.AlwaysOnTop = true; detectVis.ZIndex = 0
-        end
-    end
-    
     for _, model in ipairs(living:GetChildren()) do
         if model:IsA("Model") and model ~= char then
             if Players:FindFirstChild(model.Name) then
@@ -590,7 +668,6 @@ local function updateHighlights(oreName, instances, isEnabled)
                 local status = getOreStatus(model)
                 local radiusColor = Color3.fromRGB(50, 255, 50) -- GREEN (Default)
                 
-                -- V1.23: Color Visualization based on Status
                 if status == "RED" then radiusColor = Color3.fromRGB(255, 0, 0) -- Blocked
                 elseif status == "YELLOW" then radiusColor = Color3.fromRGB(255, 255, 0) -- Caution
                 end
@@ -609,10 +686,34 @@ local function updateHighlights(oreName, instances, isEnabled)
 end
 
 local function updatePaths()
+    if tick() - lastPathUpdate < 2.0 then return end -- Update paths every 2 seconds
+    lastPathUpdate = tick()
+    
     pathVisualsFolder:ClearAllChildren()
-    -- Only draw paths if auto mine is off (debugging) or if we want to see potential paths
-    if autoMineEnabled then return end 
-    -- ... (Existing path visual logic remains if needed for debugging)
+    -- Only draw paths if auto mine is off (debugging) OR if we want to see potential paths
+    -- Drawing for top 10 enabled ores
+    local char = LocalPlayer.Character; if not char then return end; local root = char:FindFirstChild("HumanoidRootPart"); if not root then return end; local startPos = root.Position
+    for oreName, isEnabled in pairs(oreToggleStates) do
+        if isEnabled and lastScanResults[oreName] then
+            local sortedOres = {}
+            for _, ore in ipairs(lastScanResults[oreName].Instances) do if isValidOre(ore) then local p = getOrePosition(ore); table.insert(sortedOres, {Ore = ore, Pos = p, Dist = (startPos - p).Magnitude}) end end
+            table.sort(sortedOres, function(a,b) return a.Dist < b.Dist end)
+            
+            for i = 1, math.min(10, #sortedOres) do
+                local entry = sortedOres[i]
+                task.spawn(function()
+                    local path = PathfindingService:CreatePath({AgentRadius = 3.0, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water=20, [Enum.Material.Air]=4 }})
+                    local s = pcall(function() path:ComputeAsync(startPos, entry.Pos) end)
+                    if s and path.Status == Enum.PathStatus.Success then
+                        for _, wp in ipairs(path:GetWaypoints()) do
+                            local n = Instance.new("Part"); n.Shape = Enum.PartType.Ball; n.Size = Vector3.new(0.5,0.5,0.5); n.Material = Enum.Material.Neon; n.Anchored = true; n.CanCollide = false; n.Position = wp.Position; n.Parent = pathVisualsFolder
+                            if wp.Action == Enum.PathWaypointAction.Jump then n.Color = Color3.fromRGB(170,0,255) else n.Color = Color3.fromRGB(0,255,255) end
+                        end
+                    end
+                end)
+            end
+        end
+    end
 end
 
 -- 9. MAIN LOOP
@@ -625,7 +726,18 @@ local function scanOres()
             local parent = descendant.Parent; local skip = false; while parent and parent ~= Workspace do if parent.Name == "Island2GoblinCave" then skip = true; break end; parent = parent.Parent end
             if not skip then
                 local pos = getOrePosition(descendant)
-                if pos then local n = descendant.Name; if not current[n] then current[n] = {Count=0, Instances={}} end; table.insert(current[n].Instances, descendant); current[n].Count = current[n].Count + 1 end
+                if pos then 
+                    local n = descendant.Name
+                    if not current[n] then 
+                        current[n] = {Count=0, Instances={}} 
+                        -- v1.31: Add to Priority List if new
+                        if not table.find(orePriorityList, n) then
+                            table.insert(orePriorityList, n)
+                        end
+                    end
+                    table.insert(current[n].Instances, descendant)
+                    current[n].Count = current[n].Count + 1 
+                end
             end
         end
     end
@@ -636,12 +748,16 @@ end
 
 local function refreshGui()
     local data = scanOres(); updateEntityESP(); updatePaths()
-    local seen = {}
+    
+    -- === UPDATE TARGET LIST ===
+    local targetSeen = {}
     if data then
         for name, info in pairs(data) do
-            seen[name] = true; local fname = "Frame_"..name; local f = ScrollingFrame:FindFirstChild(fname)
+            targetSeen[name] = true
+            local fname = "Frame_"..name
+            local f = TargetList:FindFirstChild(fname)
             if not f then
-                f = Instance.new("Frame"); f.Name = fname; f.Size = UDim2.new(1,-5,0,30); f.BackgroundColor3 = Color3.fromRGB(40,40,40); f.Parent = ScrollingFrame; Instance.new("UICorner", f).CornerRadius = UDim.new(0,4)
+                f = Instance.new("Frame"); f.Name = fname; f.Size = UDim2.new(1,-5,0,30); f.BackgroundColor3 = Color3.fromRGB(40,40,40); f.Parent = TargetList; Instance.new("UICorner", f).CornerRadius = UDim.new(0,4)
                 Instance.new("TextLabel", f).Name = "InfoLabel"; f.InfoLabel.Size = UDim2.new(0.65,0,1,0); f.InfoLabel.Position = UDim2.new(0,5,0,0); f.InfoLabel.BackgroundTransparency = 1; f.InfoLabel.TextXAlignment = Enum.TextXAlignment.Left; f.InfoLabel.TextColor3 = Color3.fromRGB(220,220,220); f.InfoLabel.Font = Enum.Font.GothamMedium; f.InfoLabel.TextSize = 12
                 local b = Instance.new("TextButton", f); b.Name = "ToggleBtn"; b.Size = UDim2.new(0.3,0,0.8,0); b.Position = UDim2.new(0.68,0,0.1,0); b.BackgroundColor3 = Color3.fromRGB(60,60,60); b.Text = "OFF"; b.TextColor3 = Color3.fromRGB(255,255,255); b.Font = Enum.Font.GothamBold; b.TextSize = 11; Instance.new("UICorner", b).CornerRadius = UDim.new(0,4)
                 b.MouseButton1Click:Connect(function() oreToggleStates[name] = not oreToggleStates[name]; if oreToggleStates[name] then b.Text="ON"; b.BackgroundColor3=Color3.fromRGB(0,170,0) else b.Text="OFF"; b.BackgroundColor3=Color3.fromRGB(60,60,60) if lastScanResults[name] then updateHighlights(name, lastScanResults[name].Instances, false) end end; scanOres(); updatePaths() end)
@@ -649,8 +765,32 @@ local function refreshGui()
             f.InfoLabel.Text = string.format("%s - [%d]", name, info.Count)
         end
     end
-    for _, c in ipairs(ScrollingFrame:GetChildren()) do if c:IsA("Frame") and not seen[c.Name:gsub("Frame_","")] then c:Destroy() end end
-    ScrollingFrame.CanvasSize = UDim2.new(0,0,0,UIListLayout.AbsoluteContentSize.Y)
+    for _, c in ipairs(TargetList:GetChildren()) do if c:IsA("Frame") and not targetSeen[c.Name:gsub("Frame_","")] then c:Destroy() end end
+    TargetList.CanvasSize = UDim2.new(0,0,0,TargetLayout.AbsoluteContentSize.Y)
+
+    -- === UPDATE PRIORITY LIST ===
+    local prioritySeen = {}
+    for i, name in ipairs(orePriorityList) do
+        prioritySeen[name] = true
+        local fname = "PFrame_"..name
+        local f = PriorityList:FindFirstChild(fname)
+        if not f then
+            f = Instance.new("Frame"); f.Name = fname; f.Size = UDim2.new(1,-5,0,30); f.BackgroundColor3 = Color3.fromRGB(40,40,40); f.Parent = PriorityList; Instance.new("UICorner", f).CornerRadius = UDim.new(0,4)
+            Instance.new("TextLabel", f).Name = "NameLabel"; f.NameLabel.Size = UDim2.new(0.6,0,1,0); f.NameLabel.Position = UDim2.new(0,5,0,0); f.NameLabel.BackgroundTransparency = 1; f.NameLabel.TextXAlignment = Enum.TextXAlignment.Left; f.NameLabel.TextColor3 = Color3.fromRGB(220,220,220); f.NameLabel.Font = Enum.Font.GothamMedium; f.NameLabel.TextSize = 12
+            
+            -- UP Button
+            local bUp = Instance.new("TextButton", f); bUp.Name = "UpBtn"; bUp.Size = UDim2.new(0.15,0,0.8,0); bUp.Position = UDim2.new(0.62,0,0.1,0); bUp.BackgroundColor3 = Color3.fromRGB(60,60,60); bUp.Text = "▲"; bUp.TextColor3 = Color3.fromRGB(255,255,255); bUp.Font = Enum.Font.GothamBold; bUp.TextSize = 10; Instance.new("UICorner", bUp).CornerRadius = UDim.new(0,4)
+            bUp.MouseButton1Click:Connect(function() movePriority(name, -1); refreshGui() end)
+            
+            -- DOWN Button
+            local bDown = Instance.new("TextButton", f); bDown.Name = "DownBtn"; bDown.Size = UDim2.new(0.15,0,0.8,0); bDown.Position = UDim2.new(0.8,0,0.1,0); bDown.BackgroundColor3 = Color3.fromRGB(60,60,60); bDown.Text = "▼"; bDown.TextColor3 = Color3.fromRGB(255,255,255); bDown.Font = Enum.Font.GothamBold; bDown.TextSize = 10; Instance.new("UICorner", bDown).CornerRadius = UDim.new(0,4)
+            bDown.MouseButton1Click:Connect(function() movePriority(name, 1); refreshGui() end)
+        end
+        f.LayoutOrder = i -- Strict Order
+        f.NameLabel.Text = string.format("%d. %s", i, name)
+    end
+    for _, c in ipairs(PriorityList:GetChildren()) do if c:IsA("Frame") and not prioritySeen[c.Name:gsub("PFrame_","")] then c:Destroy() end end
+    PriorityList.CanvasSize = UDim2.new(0,0,0,PriorityLayout.AbsoluteContentSize.Y)
 end
 
 PE_Toggle.MouseButton1Click:Connect(function() playerEspEnabled = not playerEspEnabled; if playerEspEnabled then PE_Toggle.Text="ON"; PE_Toggle.BackgroundColor3=Color3.fromRGB(255,50,50) else PE_Toggle.Text="OFF"; PE_Toggle.BackgroundColor3=Color3.fromRGB(60,60,60) end; updateEntityESP() end)
