@@ -1,12 +1,14 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.60)
-    - v1.60 UPDATE: Added Settings System (Save/Load).
-        - Saves configuration to 'orescanner_settings.json'.
-        - Persists: Ore Toggles, Priority List, ESP Settings, Auto Mine state.
-    - v1.60 UPDATE: Fixed Visuals Toggle Bug.
-        - "Visuals OFF" now performs an immediate deep clean of all ESP objects.
-    - v1.59 UPDATE: Removed MobBox Check.
-    - v1.58 UPDATE: Restored MobBox Check & Fixed Path Visuals.
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.61)
+    - v1.61 UPDATE: Fixed MobBox Destruction Bug.
+        - Renamed script visual boxes to "ESPMobBox" to avoid conflict.
+        - Cleanup logic now ONLY destroys "ESPMobBox", leaving the game's "MobBox" intact.
+        - Restored "MobBox" check in combat logic (Fixes attacking bugged players).
+    - v1.61 UPDATE: Fixed Priority Reorder Buttons.
+        - Switched to a robust Swap logic for Up/Down buttons.
+        - Added debug prints for reordering.
+    - v1.60 UPDATE: Added Settings System & Fixed Visuals Toggle.
+    - v1.55 UPDATE: Restored Lenient Obstacle Checks.
     - Scans for ores in the "Rocks" folder
     - ESP Highlights + Radius Visualization
     - FEATURE: Player ESP Toggle & AUTO MINE Toggle & VISUALS Toggle
@@ -153,7 +155,7 @@ MainFrame.Parent = ScreenGui
 makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.60 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.61 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -304,15 +306,19 @@ local function isOreFullHealth(ore)
     return true
 end
 
+-- v1.61 FIX: Priority Swap Logic
 local function movePriority(oreName, direction)
     local idx = table.find(orePriorityList, oreName)
     if not idx then return end
-    if direction == -1 and idx > 1 then
-        table.remove(orePriorityList, idx); table.insert(orePriorityList, idx - 1, oreName)
-    elseif direction == 1 and idx < #orePriorityList then
-        table.remove(orePriorityList, idx); table.insert(orePriorityList, idx + 1, oreName)
+    
+    local newIdx = idx + direction
+    if newIdx >= 1 and newIdx <= #orePriorityList then
+        -- Swap values safely
+        orePriorityList[idx], orePriorityList[newIdx] = orePriorityList[newIdx], orePriorityList[idx]
+        
+        logDebug("Moved " .. oreName .. (direction == -1 and " Up" or " Down"))
+        saveSettings() -- Save on change
     end
-    saveSettings() -- Save on change
 end
 
 local function setTarget(ore)
@@ -388,7 +394,8 @@ local function getNearbyMob()
         if model:IsA("Model") and model ~= char then
             if mobBlacklist[model] and (tick() - mobBlacklist[model] < COMBAT_BLACKLIST_DURATION) then continue end
             if not Players:FindFirstChild(model.Name) then
-                -- if not model:FindFirstChild("MobBox") then continue end 
+                -- v1.61 FIX: Restored MobBox check (only attack valid game mobs)
+                if not model:FindFirstChild("MobBox") then continue end 
 
                 local pivot = model:GetPivot(); local hum = model:FindFirstChild("Humanoid")
                 if pivot and hum and hum.Health > 0 then
@@ -713,7 +720,7 @@ local function updateEntityESP()
             for _, model in ipairs(living:GetChildren()) do
                 if model:FindFirstChild("PlayerBox") then model.PlayerBox:Destroy() end
                 if model:FindFirstChild("PlayerTag") then model.PlayerTag:Destroy() end
-                if model:FindFirstChild("MobBox") then model.MobBox:Destroy() end
+                if model:FindFirstChild("ESPMobBox") then model.ESPMobBox:Destroy() end -- v1.61: Changed to ESPMobBox
             end
         end
         return 
@@ -736,8 +743,9 @@ local function updateEntityESP()
                     if model:FindFirstChild("PlayerTag") then model.PlayerTag:Destroy() end
                 end
             elseif autoMineEnabled then -- Mob ESP
-                if not model:FindFirstChild("MobBox") then
-                   local box = Instance.new("BoxHandleAdornment", model); box.Name = "MobBox"; box.Adornee = model; box.Size = model:GetExtentsSize(); box.Color3 = Color3.fromRGB(255, 100, 0); box.Transparency = 0.6; box.AlwaysOnTop = true; box.ZIndex = 5
+                -- v1.61: Create custom ESP box "ESPMobBox"
+                if not model:FindFirstChild("ESPMobBox") then
+                   local box = Instance.new("BoxHandleAdornment", model); box.Name = "ESPMobBox"; box.Adornee = model; box.Size = model:GetExtentsSize(); box.Color3 = Color3.fromRGB(255, 100, 0); box.Transparency = 0.6; box.AlwaysOnTop = true; box.ZIndex = 5
                 end
             end
         end
@@ -795,6 +803,7 @@ end
 local function updatePaths()
     if tick() - lastPathUpdate < 2.0 then return end
     lastPathUpdate = tick()
+    
     pathVisualsFolder:ClearAllChildren()
     
     if not visualsEnabled then return end -- v1.56: Respect toggle
@@ -923,7 +932,7 @@ VS_Toggle.MouseButton1Click:Connect(function()
             for _, model in ipairs(living:GetChildren()) do
                 if model:FindFirstChild("PlayerBox") then model.PlayerBox:Destroy() end
                 if model:FindFirstChild("PlayerTag") then model.PlayerTag:Destroy() end
-                if model:FindFirstChild("MobBox") then model.MobBox:Destroy() end
+                if model:FindFirstChild("ESPMobBox") then model.ESPMobBox:Destroy() end -- v1.61
             end
         end
     end
