@@ -1,12 +1,12 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.33)
-    - v1.33 UPDATE: "Hole/Cave" Pathfinding Fixes.
-        - Reduced Agent Radius (3.0 -> 2.0) to fit in smaller holes.
-        - Reduced Air Cost to encourage dropping down ledges/holes.
-        - Added Smart Jump Logic: Prevents jumping if the target is below (Walking off ledge instead).
-    - v1.32 UPDATE: Simultaneous Dropdowns & Larger Console.
-    - v1.31 UPDATE: Priority System.
-    - v1.30 UPDATE: Stringent Blacklist Logic.
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.43)
+    - v1.43 UPDATE: Restored Pathfinding Reliability (Fixed walking into walls).
+        - Removed "Blind Trust" for close ores.
+        - Added Line-of-Sight (Raycast) check: Only skips pathfinding if the ore is VISIBLE and SAFE.
+        - If an ore is close but behind a wall, the bot now forces a proper path calculation.
+    - v1.42 UPDATE: Optimized Scanning & Fail-Safe.
+    - v1.41 UPDATE: "Not Moving" Fixes.
+    - v1.40 UPDATE: Visual Player Radius Zones.
     - Scans for ores in the "Rocks" folder
     - ESP Highlights + Radius Visualization
     - FEATURE: Player ESP Toggle & AUTO MINE Toggle
@@ -25,10 +25,10 @@ local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
 -- 1. SETTINGS & STATE
-local SCAN_DELAY = 0.5 
-local MINING_RADIUS = 7.5           -- Interaction range
-local PLAYER_DETECTION_RADIUS = 25  -- Player detection range
-local SURFACE_STOP_DISTANCE = 3.5   -- Stop distance from ore surface
+local SCAN_DELAY = 0.2 -- Faster scan tick
+local MINING_RADIUS = 7.5           
+local PLAYER_DETECTION_RADIUS = 25  
+local SURFACE_STOP_DISTANCE = 3.5   
 local COMBAT_RADIUS = 15 
 local HIGHLIGHT_LIMIT = 30 
 
@@ -57,7 +57,8 @@ local currentCombatTarget = nil
 local currentCombatStartTime = 0
 
 local lastPathUpdate = 0 
--- UI States for Dropdowns
+
+-- UI States
 local isTargetDropdownOpen = false 
 local isPriorityDropdownOpen = false
 
@@ -111,7 +112,7 @@ MainFrame.Parent = ScreenGui
 makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.33 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.43 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -130,7 +131,7 @@ end
 local PE_Toggle = createControl("PlayerESP_Control", 0, "Player ESP", Color3.fromRGB(255, 80, 80))
 local AM_Toggle = createControl("AutoMine_Control", 35, "Auto Mine/Attack", Color3.fromRGB(80, 255, 255))
 
--- === DROPDOWN 1: TARGET SELECTION ===
+-- === DROPDOWNS ===
 local TargetHeader = Instance.new("Frame"); TargetHeader.Size = UDim2.new(1, -10, 0, 25); TargetHeader.Position = UDim2.new(0, 5, 0, 115); TargetHeader.BackgroundColor3 = Color3.fromRGB(45, 45, 45); TargetHeader.Parent = MainFrame; Instance.new("UICorner", TargetHeader).CornerRadius = UDim.new(0, 4)
 local TargetBtn = Instance.new("TextButton"); TargetBtn.Size = UDim2.new(1, 0, 1, 0); TargetBtn.BackgroundTransparency = 1; TargetBtn.Text = "Target Selection ▼"; TargetBtn.TextColor3 = Color3.fromRGB(200, 200, 200); TargetBtn.Font = Enum.Font.GothamBold; TargetBtn.TextSize = 12; TargetBtn.Parent = TargetHeader
 
@@ -140,16 +141,10 @@ local TargetLayout = Instance.new("UIListLayout"); TargetLayout.Padding = UDim.n
 TargetBtn.MouseButton1Click:Connect(function()
     isTargetDropdownOpen = not isTargetDropdownOpen
     TargetList.Visible = isTargetDropdownOpen
-    if isTargetDropdownOpen then
-        TargetList.Size = UDim2.new(1, -10, 0, 120)
-        TargetBtn.Text = "Target Selection ▼"
-    else
-        TargetList.Size = UDim2.new(1, -10, 0, 0)
-        TargetBtn.Text = "Target Selection ▶"
-    end
+    if isTargetDropdownOpen then TargetList.Size = UDim2.new(1, -10, 0, 120); TargetBtn.Text = "Target Selection ▼"
+    else TargetList.Size = UDim2.new(1, -10, 0, 0); TargetBtn.Text = "Target Selection ▶" end
 end)
 
--- === DROPDOWN 2: PRIORITY REORDER ===
 local PriorityHeader = Instance.new("Frame"); PriorityHeader.Name = "PriorityHeader"; PriorityHeader.Size = UDim2.new(1, -10, 0, 25); PriorityHeader.Position = UDim2.new(0, 5, 0, 270); PriorityHeader.BackgroundColor3 = Color3.fromRGB(45, 45, 45); PriorityHeader.Parent = MainFrame; Instance.new("UICorner", PriorityHeader).CornerRadius = UDim.new(0, 4)
 local PriorityBtn = Instance.new("TextButton"); PriorityBtn.Name = "PriorityBtn"; PriorityBtn.Size = UDim2.new(1, 0, 1, 0); PriorityBtn.BackgroundTransparency = 1; PriorityBtn.Text = "Priority Reorder ▶"; PriorityBtn.TextColor3 = Color3.fromRGB(200, 200, 200); PriorityBtn.Font = Enum.Font.GothamBold; PriorityBtn.TextSize = 12; PriorityBtn.Parent = PriorityHeader
 
@@ -159,13 +154,8 @@ local PriorityLayout = Instance.new("UIListLayout"); PriorityLayout.Padding = UD
 PriorityBtn.MouseButton1Click:Connect(function()
     isPriorityDropdownOpen = not isPriorityDropdownOpen
     PriorityList.Visible = isPriorityDropdownOpen
-    if isPriorityDropdownOpen then
-        PriorityList.Size = UDim2.new(1, -10, 0, 120)
-        PriorityBtn.Text = "Priority Reorder ▼"
-    else
-        PriorityList.Size = UDim2.new(1, -10, 0, 0)
-        PriorityBtn.Text = "Priority Reorder ▶"
-    end
+    if isPriorityDropdownOpen then PriorityList.Size = UDim2.new(1, -10, 0, 120); PriorityBtn.Text = "Priority Reorder ▼"
+    else PriorityList.Size = UDim2.new(1, -10, 0, 0); PriorityBtn.Text = "Priority Reorder ▶" end
 end)
 
 -- FOOTER (Status & Debug)
@@ -200,6 +190,44 @@ local function getSurfaceDistance(characterRoot, targetOre)
     if raycastResult then return (origin - raycastResult.Position).Magnitude else return direction.Magnitude end
 end
 
+-- v1.38: OBSTACLE DETECTION (Forward Raycast)
+local function isPathBlockedByObstacle(character)
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {character, existingFolder} -- Ignore self and path dots
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    
+    -- Cast straight forward 2.5 studs (Movement direction)
+    local direction = root.CFrame.LookVector * 2.5
+    local result = Workspace:Raycast(root.Position, direction, rayParams)
+    
+    if result and result.Instance.CanCollide then
+        -- Ignore if it's the ore we are targeting or part of Rocks folder
+        if result.Instance:IsDescendantOf(Workspace:FindFirstChild("Rocks")) then return false end
+        -- Ignore small steps (Traversable) - Check height
+        if result.Position.Y < root.Position.Y - 1 then return false end
+        
+        return true -- Genuine blockage
+    end
+    return false
+end
+
+-- v1.43: Line of Sight Check (Visual validation)
+local function hasLineOfSight(startPos, endPos, ignoreList)
+    local diff = endPos - startPos
+    local dir = diff.Unit
+    local dist = diff.Magnitude
+    
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = ignoreList or {}
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    
+    local result = Workspace:Raycast(startPos, dir * dist, params)
+    return result == nil -- Returns true if nothing blocked the way
+end
+
 local function isSafeToWalk(targetPos)
     local char = LocalPlayer.Character
     if not char then return false end
@@ -229,43 +257,29 @@ local function isOreFullHealth(ore)
     return (h and m) and h >= m or true
 end
 
--- PRIORITY MANAGEMENT
 local function movePriority(oreName, direction)
     local idx = table.find(orePriorityList, oreName)
     if not idx then return end
-    
     if direction == -1 and idx > 1 then
-        -- Move Up
-        table.remove(orePriorityList, idx)
-        table.insert(orePriorityList, idx - 1, oreName)
+        table.remove(orePriorityList, idx); table.insert(orePriorityList, idx - 1, oreName)
     elseif direction == 1 and idx < #orePriorityList then
-        -- Move Down
-        table.remove(orePriorityList, idx)
-        table.insert(orePriorityList, idx + 1, oreName)
+        table.remove(orePriorityList, idx); table.insert(orePriorityList, idx + 1, oreName)
     end
-    -- Trigger refresh (indirectly via loop)
 end
 
--- V1.26: TARGET SETTER & TIMEOUT CALCULATOR
 local function setTarget(ore)
     currentMiningOre = ore
     currentOreStartTime = tick()
-    
     local h = ore:GetAttribute("Health")
     lastOreHealth = h or 999999
-    
-    -- Calculate Travel Distance
     local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     local dist = 100
     if root and ore then
         local pos = getOrePosition(ore)
         if pos then dist = (root.Position - pos).Magnitude end
     end
-    
-    -- DYNAMIC TIMEOUT: (Distance / Speed) + Buffer
     local travelTime = (dist / 12) + 20 
     currentMaxTime = travelTime
-    
     StatusLabel.Text = "Status: Target " .. ore.Name .. " ("..math.floor(travelTime).."s)"
     logDebug("Target set: " .. ore.Name .. " (Dist: " .. math.floor(dist) .. ")")
 end
@@ -281,14 +295,16 @@ local function getOreStatus(ore)
         for _, model in ipairs(living:GetChildren()) do
             if model and model.Parent and model:IsA("Model") and Players:FindFirstChild(model.Name) and model.Name ~= LocalPlayer.Name then
                 local pivot = model:GetPivot()
+                -- v1.40: Visual and Logical check now consistent
                 if pivot and (pivot.Position - orePos).Magnitude <= PLAYER_DETECTION_RADIUS then playerNearby = true; break end
             end
         end
     end
-    if playerNearby then
-        if not isFull then return "RED" else return "YELLOW" end
-    else
-        return "GREEN"
+    if playerNearby then 
+        if not isFull then return "RED" -- Player Near + Damaged = Blocked
+        else return "YELLOW" end        -- Player Near + Full Health = Caution
+    else 
+        return "GREEN" 
     end
 end
 
@@ -300,31 +316,22 @@ local function isValidOre(ore)
     return true
 end
 
--- 4. COMBAT & TOOL FUNCTIONS
+-- 4. COMBAT & TOOL
 local function equipToolByName(toolName)
     local char = LocalPlayer.Character; if not char then return end
     local hum = char:FindFirstChild("Humanoid"); if not hum then return end
     local tool = LocalPlayer.Backpack:FindFirstChild(toolName)
     if tool then hum:EquipTool(tool) end
 end
-
 local function equipPickaxe() equipToolByName("Pickaxe") end
 local function equipSword() equipToolByName("Sword"); if not LocalPlayer.Character:FindFirstChild("Sword") then equipToolByName("Weapon") end end
-
-local function mineTarget(ore)
-    pcall(function() ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Packages"):WaitForChild("Knit"):WaitForChild("Services"):WaitForChild("ToolService"):WaitForChild("RF"):WaitForChild("ToolActivated"):InvokeServer("Pickaxe") end)
-end
-
-local function attackTargetMob(mob)
-    pcall(function() ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Packages"):WaitForChild("Knit"):WaitForChild("Services"):WaitForChild("ToolService"):WaitForChild("RF"):WaitForChild("ToolActivated"):InvokeServer("Weapon") end)
-end
-
+local function mineTarget(ore) pcall(function() ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Packages"):WaitForChild("Knit"):WaitForChild("Services"):WaitForChild("ToolService"):WaitForChild("RF"):WaitForChild("ToolActivated"):InvokeServer("Pickaxe") end) end
+local function attackTargetMob(mob) pcall(function() ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Packages"):WaitForChild("Knit"):WaitForChild("Services"):WaitForChild("ToolService"):WaitForChild("RF"):WaitForChild("ToolActivated"):InvokeServer("Weapon") end) end
 local function faceTarget(pos)
     local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if root then root.CFrame = CFrame.lookAt(root.Position, Vector3.new(pos.X, root.Position.Y, pos.Z)) end
 end
 
--- 5. ENTITY DETECTION (MOBS)
 local function getNearbyMob()
     local char = LocalPlayer.Character; if not char then return nil end
     local root = char:FindFirstChild("HumanoidRootPart"); if not root then return nil end
@@ -334,8 +341,7 @@ local function getNearbyMob()
         if model:IsA("Model") and model ~= char then
             if mobBlacklist[model] and (tick() - mobBlacklist[model] < COMBAT_BLACKLIST_DURATION) then continue end
             if not Players:FindFirstChild(model.Name) then
-                if not model:FindFirstChild("MobBox") then continue end -- Strict check
-
+                if not model:FindFirstChild("MobBox") then continue end 
                 local pivot = model:GetPivot(); local hum = model:FindFirstChild("Humanoid")
                 if pivot and hum and hum.Health > 0 then
                     local dist = (pivot.Position - root.Position).Magnitude
@@ -347,22 +353,16 @@ local function getNearbyMob()
     return closestMob
 end
 
--- 6. AUTO LOOP (MINE + COMBAT)
--- v1.31 UPDATE: STRICT PRIORITY LOOP
+-- 6. AUTO LOOP
+-- v1.42 UPDATE: OPTIMIZED SCANNING (Instant React)
 local function getBestOre()
     local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart"); if not root then return nil end
     
     logDebug("--- Scanning (Priority Mode) ---")
     
-    -- Iterate through defined priority list
     for _, oreName in ipairs(orePriorityList) do
-        -- Only check if this specific ore type is enabled
         if oreToggleStates[oreName] and lastScanResults[oreName] then
-            
-            -- Gather candidates for THIS ore type only
-            local greenCandidates = {}
-            local yellowCandidates = {}
-            local count = 0
+            local greenCandidates = {}; local yellowCandidates = {}; local count = 0
             
             for _, ore in ipairs(lastScanResults[oreName].Instances) do
                 if isValidOre(ore) then
@@ -378,47 +378,47 @@ local function getBestOre()
             end
             
             if count > 0 then
-                -- Helper to find best from list (copy from previous version)
-                local function selectFromList(list)
+                local function selectFromList(list, label)
                     table.sort(list, function(a, b) return a.Dist < b.Dist end)
-                    local best = nil; local minWps = math.huge; local checkLimit = math.min(10, #list) -- Check fewer per type for speed
+                    local best = nil
+                    local checkLimit = math.min(20, #list) 
+                    
                     for i = 1, checkLimit do
+                        if getNearbyMob() then return nil end 
                         local entry = list[i]
-                        -- v1.33: Tuned Path Parameters for Holes
-                        local path = PathfindingService:CreatePath({
-                            AgentRadius = 2.0, -- Reduced for holes
-                            AgentHeight = 4.0, 
-                            AgentCanJump = true, 
-                            Costs = { Water = 20 } -- Removed Air cost
-                        })
-                        local success = pcall(function() path:ComputeAsync(root.Position, entry.Pos) end)
-                        if success and path.Status == Enum.PathStatus.Success then
-                            local wps = #path:GetWaypoints(); if wps < minWps then minWps = wps; best = entry.Ore end
+                        
+                        -- v1.43 FIX: Only instant match if we have Line of Sight (Safe from walls)
+                        if entry.Dist < 60 and isSafeToWalk(entry.Pos) and hasLineOfSight(root.Position, entry.Pos, {LocalPlayer.Character, entry.Ore}) then
+                            logDebug("Instant Match (LoS): " .. entry.Ore.Name)
+                            return entry.Ore
                         end
-                        if i % 5 == 0 then task.wait() end
+
+                        -- v1.42: HEAVY CHECK (Limited to top 3)
+                        if i <= 3 then
+                            StatusLabel.Text = string.format("Pathing: %s (%d/%d)...", entry.Ore.Name, i, 3)
+                            local path = PathfindingService:CreatePath({AgentRadius = 2.0, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20 }})
+                            local success = pcall(function() path:ComputeAsync(root.Position, entry.Pos) end)
+                            if success and path.Status == Enum.PathStatus.Success then
+                                return entry.Ore
+                            end
+                            task.wait() -- Slight yield only for heavy checks
+                        end
                     end
-                    if not best and #list > 0 then local closest = list[1]; if closest.Dist < 25 and isSafeToWalk(closest.Pos) then best = closest.Ore end end
-                    return best
+                    
+                    -- Fallback: Return closest if logic failed (Main loop will retry/blacklist)
+                    if #list > 0 then return list[1].Ore end
+                    return nil
                 end
+
+                local found = selectFromList(greenCandidates, "Green")
+                if found then logDebug("Priority Hit: " .. oreName); return found end
                 
-                -- Check Green candidates for this priority level
-                local found = selectFromList(greenCandidates)
-                if found then 
-                    logDebug("Priority Hit: " .. oreName)
-                    return found 
-                end
-                
-                -- Check Yellow candidates for this priority level
-                found = selectFromList(yellowCandidates)
-                if found then 
-                    logDebug("Priority Hit (Yellow): " .. oreName)
-                    return found 
-                end
+                -- Only check yellow if no green found
+                found = selectFromList(yellowCandidates, "Yellow")
+                if found then logDebug("Priority Hit (Yellow): " .. oreName); return found end
             end
-            -- If nothing found for this oreName, continue to next in priority list
         end
     end
-    
     logDebug("No reachable ores found.")
     return nil
 end
@@ -429,12 +429,15 @@ local function autoMineLoop()
     logDebug("Auto System Started")
     
     while autoMineEnabled do
-        local char = LocalPlayer.Character
-        if char and char:FindFirstChild("Humanoid") and char:FindFirstChild("HumanoidRootPart") and char.Humanoid.Health > 0 then
-            local root = char.HumanoidRootPart
-            local humanoid = char.Humanoid
+        local success, err = pcall(function()
+            local char = LocalPlayer.Character
+            if not char then task.wait(0.5); return end
             
-            -- 1. COMBAT CHECK
+            local hum = char:FindFirstChild("Humanoid")
+            local root = char:FindFirstChild("HumanoidRootPart")
+            if not hum or not root or hum.Health <= 0 then task.wait(0.5); return end
+            
+            -- COMBAT
             local nearbyMob = getNearbyMob()
             if nearbyMob then
                 if nearbyMob ~= currentCombatTarget then currentCombatTarget = nearbyMob; currentCombatStartTime = tick() end
@@ -444,62 +447,39 @@ local function autoMineLoop()
                     updateStatus("COMBAT: Attacking " .. nearbyMob.Name)
                     if not char:FindFirstChild("Sword") and not char:FindFirstChild("Weapon") then equipSword() end
                     local mobPos = nearbyMob:GetPivot().Position
-                    humanoid:MoveTo(root.Position); faceTarget(mobPos); attackTargetMob(nearbyMob)
-                    if (root.Position - mobPos).Magnitude > 5 then humanoid:MoveTo(mobPos) end
-                    task.wait(0.1); continue 
+                    hum:MoveTo(root.Position); faceTarget(mobPos); attackTargetMob(nearbyMob)
+                    if (root.Position - mobPos).Magnitude > 5 then hum:MoveTo(mobPos) end
+                    task.wait(0.1); return
                 end
             else
                 currentCombatTarget = nil
             end
             
-            -- 2. NEARBY ORE CHECK (Prioritize Current Target if Close)
-            -- Note: In v1.31, we rely heavily on the main scanner, but immediate overrides are ok if same priority
+            -- IMMEDIATE NEARBY ORE
             local foundNearby = false
-            -- Simple check: Is current target still valid and close? Keep it.
             if currentMiningOre and isValidOre(currentMiningOre) then
                 local p = getOrePosition(currentMiningOre)
-                if p and (root.Position - p).Magnitude <= MINING_RADIUS then
-                    foundNearby = true
-                end
-            end
-            -- Only scan nearby if we don't have a mining target
-            if not foundNearby then
-               -- Let the main targeting logic handle it to respect priority
+                if p and (root.Position - p).Magnitude <= MINING_RADIUS then foundNearby = true end
             end
 
-            -- 3. TARGETING
             if currentMiningOre then
-                -- V1.26: HEALTH MONITORING (Extends Timeout)
                 local currentH = currentMiningOre:GetAttribute("Health") or 0
-                if currentH < lastOreHealth then
-                    lastOreHealth = currentH
-                    currentOreStartTime = tick() -- Reset timer
-                    currentMaxTime = 30 -- Short buffer for active mining
-                end
-
-                -- V1.30: STRINGENT BLACKLIST PROXIMITY CHECK
-                local distToOre = 9999
-                local oreP = getOrePosition(currentMiningOre)
+                if currentH < lastOreHealth then lastOreHealth = currentH; currentOreStartTime = tick(); currentMaxTime = 30 end
+                local distToOre = 9999; local oreP = getOrePosition(currentMiningOre)
                 if oreP then distToOre = (root.Position - oreP).Magnitude end
 
                 if not currentMiningOre.Parent then logDebug("Ore lost."); currentMiningOre = nil
                 elseif tick() - currentOreStartTime > currentMaxTime then 
-                    
-                    -- V1.30: Only blacklist if we are CLOSE to the ore (Stuck or unable to mine)
-                    if distToOre < TIMEOUT_PROXIMITY_THRESHOLD then
-                        logDebug("TIMEOUT (Near): Blacklisting " .. currentMiningOre.Name)
-                        oreBlacklist[currentMiningOre] = tick(); currentMiningOre = nil 
-                    else
-                        -- We are far away, just reset timer (Travel time extension)
-                        currentOreStartTime = tick()
-                    end
-
-                elseif getOreStatus(currentMiningOre) == "RED" then
-                    logDebug("Target became BLOCKED. Switching..."); currentMiningOre = nil
-                end
+                    if distToOre < TIMEOUT_PROXIMITY_THRESHOLD then logDebug("TIMEOUT (Near): Blacklisting " .. currentMiningOre.Name); oreBlacklist[currentMiningOre] = tick(); currentMiningOre = nil 
+                    else currentOreStartTime = tick() end
+                elseif getOreStatus(currentMiningOre) == "RED" then logDebug("Target became BLOCKED."); currentMiningOre = nil end
             end
 
-            if not currentMiningOre then updateStatus("Scanning..."); local best = getBestOre(); if best then setTarget(best) end end
+            if not currentMiningOre then 
+                updateStatus("Scanning..."); 
+                local best = getBestOre()
+                if best then setTarget(best) end 
+            end
             
             local targetOre = currentMiningOre
             if targetOre then
@@ -509,85 +489,94 @@ local function autoMineLoop()
                     local centerDist = (root.Position - targetPos).Magnitude
                     
                     if centerDist <= MINING_RADIUS or surfaceDist <= SURFACE_STOP_DISTANCE + 1.0 then
+                        if getOreStatus(targetOre) == "RED" then
+                             logDebug("Target occupied! Aborting."); currentMiningOre = nil; return
+                        end
+
                         updateStatus("Mining " .. targetOre.Name)
-                        humanoid:MoveTo(root.Position) 
+                        hum:MoveTo(root.Position) 
                         if not char:FindFirstChild("Pickaxe") then equipPickaxe() end
-                        faceTarget(targetPos)
-                        mineTarget(targetOre)
-                        task.wait(0.1)
+                        faceTarget(targetPos); mineTarget(targetOre); task.wait(0.1)
                     else
                         updateStatus("Moving to " .. targetOre.Name)
-                        
-                        -- v1.33: Tuned Path Parameters for Holes
-                        local path = PathfindingService:CreatePath({
-                            AgentRadius = 2.0, -- Reduced for holes
-                            AgentHeight = 4.0, 
-                            AgentCanJump = true, 
-                            Costs = { Water = 20 } -- Removed Air cost
-                        })
-                        
+                        local path = PathfindingService:CreatePath({AgentRadius = 2.5, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20 }})
                         local success = pcall(function() path:ComputeAsync(root.Position, targetPos) end)
                         
                         if success and path.Status == Enum.PathStatus.Success then
                             local waypoints = path:GetWaypoints()
+                            local pathBlocked = false
+                            local blockedConn; blockedConn = path.Blocked:Connect(function() logDebug("PATH BLOCKED"); pathBlocked = true end)
+
                             for i, wp in ipairs(waypoints) do
                                 if i == 1 then continue end
+                                if pathBlocked then break end
                                 
                                 if not autoMineEnabled or not currentMiningOre or not currentMiningOre.Parent then break end
                                 if getNearbyMob() then break end
                                 if tick() - currentOreStartTime > currentMaxTime then break end
-                                if humanoid.Health <= 0 then break end
+                                if hum.Health <= 0 then break end
                                 if getOreStatus(targetOre) == "RED" then break end
 
                                 if i % 15 == 0 then 
                                     local potentialNewTarget = getBestOre()
                                     if potentialNewTarget and potentialNewTarget ~= currentMiningOre then
-                                        updateStatus("Found higher priority target! Switching...")
-                                        setTarget(potentialNewTarget)
-                                        break
+                                        updateStatus("Found higher priority target!"); setTarget(potentialNewTarget); break
                                     end
                                 end
 
-                                if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then humanoid:MoveTo(root.Position); break end
+                                if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then hum:MoveTo(root.Position); break end
 
                                 updateStatus("Moving to " .. targetOre.Name)
-                                
                                 if wp.Action == Enum.PathWaypointAction.Jump then 
-                                    -- v1.33: Smart Jump Logic (Prevent dropping jumps)
-                                    if wp.Position.Y >= root.Position.Y - 3.0 then
-                                        humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-                                        humanoid.Jump = true
-                                    end
+                                    if wp.Position.Y >= root.Position.Y - 3.0 then hum:ChangeState(Enum.HumanoidStateType.Jumping); hum.Jump = true end
                                 end
                                 
                                 local moveSuccess = false
-                                local connection = humanoid.MoveToFinished:Connect(function() moveSuccess = true end)
-                                humanoid:MoveTo(wp.Position)
+                                local connection = hum.MoveToFinished:Connect(function() moveSuccess = true end)
+                                hum:MoveTo(wp.Position)
                                 
                                 local timeElapsed = 0; local timeout = 1.0
                                 while not moveSuccess and timeElapsed < timeout do
                                     if not autoMineEnabled then break end
-                                    if humanoid.Health <= 0 then break end
+                                    if pathBlocked then break end
+                                    if hum.Health <= 0 then break end
                                     if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then moveSuccess = true; break end
                                     if getNearbyMob() then moveSuccess = true; break end 
-                                    if root.Velocity.Magnitude < 0.1 and timeElapsed > 0.5 then humanoid:ChangeState(Enum.HumanoidStateType.Jumping); humanoid.Jump = true; moveSuccess = true; break end 
+                                    
+                                    if isPathBlockedByObstacle(char) then
+                                        logDebug("OBSTACLE DETECTED! Aborting path.")
+                                        pathBlocked = true; moveSuccess = true; break
+                                    end
+
+                                    if root.Velocity.Magnitude < 0.1 and timeElapsed > 0.5 then
+                                        hum:ChangeState(Enum.HumanoidStateType.Jumping); hum.Jump = true
+                                        if timeElapsed > 0.8 then 
+                                            logDebug("STUCK: Temporarily skipping " .. targetOre.Name)
+                                            oreBlacklist[targetOre] = tick() + 10 
+                                            currentMiningOre = nil; moveSuccess = true; pathBlocked = true
+                                        end
+                                    end 
                                     task.wait(0.1); timeElapsed = timeElapsed + 0.1
                                 end
                                 if connection then connection:Disconnect() end
                             end
+                            if blockedConn then blockedConn:Disconnect() end
                         else
-                            if isSafeToWalk(targetPos) then
+                            -- v1.43: FAIL-SAFE WITH LOS CHECK
+                            if isSafeToWalk(targetPos) and hasLineOfSight(root.Position, targetPos, {char, targetOre}) then
                                 if surfaceDist > SURFACE_STOP_DISTANCE then
-                                    humanoid:MoveTo(targetPos)
+                                    hum:MoveTo(targetPos)
                                     local timeElapsed = 0
                                     while timeElapsed < 0.5 do
-                                        if humanoid.Health <= 0 then break end
-                                        if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then humanoid:MoveTo(root.Position); break end
+                                        if hum.Health <= 0 then break end
+                                        if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then hum:MoveTo(root.Position); break end
                                         task.wait(0.1); timeElapsed = timeElapsed + 0.1
                                     end
                                 end
                             else
-                                oreBlacklist[targetOre] = tick(); currentMiningOre = nil
+                                -- BLACKLIST IMMEDIATELY if path failed and not visible
+                                logDebug("Path failed & No LOS: Blacklisting " .. targetOre.Name)
+                                oreBlacklist[targetOre] = tick() + 5; currentMiningOre = nil
                             end
                         end
                     end
@@ -598,6 +587,11 @@ local function autoMineLoop()
                 updateStatus("Idle - No ores")
                 task.wait(0.5)
             end
+        end)
+        
+        if not success then
+            warn("AutoMine Error: " .. tostring(err))
+            task.wait(1)
         end
         task.wait()
     end
@@ -632,8 +626,13 @@ end
 local function onCharacterAdded(char)
     resetState()
     local hum = char:WaitForChild("Humanoid", 10)
-    if hum then hum.Died:Connect(resetState) end
-    enableAnimations(char)
+    local root = char:WaitForChild("HumanoidRootPart", 10)
+    if hum and root then 
+        hum.Died:Connect(resetState)
+        enableAnimations(char)
+    else
+        logDebug("Character load failed (Incomplete)")
+    end
 end
 
 LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
@@ -675,15 +674,11 @@ local function updateHighlights(oreName, instances, isEnabled)
         end
         for _, entry in ipairs(sortedInstances) do
             local model = entry.model; count = count + 1
-            if count > HIGHLIGHT_LIMIT then if model:FindFirstChild("OreHighlight") then model.OreHighlight:Destroy() end; if model:FindFirstChild("OreRadiusVisual") then model.OreRadiusVisual:Destroy() end; continue end
+            if count > HIGHLIGHT_LIMIT then if model:FindFirstChild("OreHighlight") then model.OreHighlight:Destroy() end; if model:FindFirstChild("OreRadiusVisual") then model.OreRadiusVisual:Destroy() end; if model:FindFirstChild("OreStatusRadius") then model.OreStatusRadius:Destroy() end; continue end
             if model:IsA("Model") or model:IsA("BasePart") then
-                local pos = getOrePosition(model)
-                local status = getOreStatus(model)
-                local radiusColor = Color3.fromRGB(50, 255, 50) -- GREEN (Default)
-                
-                if status == "RED" then radiusColor = Color3.fromRGB(255, 0, 0) -- Blocked
-                elseif status == "YELLOW" then radiusColor = Color3.fromRGB(255, 255, 0) -- Caution
-                end
+                local pos = getOrePosition(model); local status = getOreStatus(model); local radiusColor = Color3.fromRGB(50, 255, 50)
+                local statusColor = Color3.fromRGB(0, 255, 0)
+                if status == "RED" then statusColor = Color3.fromRGB(255, 0, 0); radiusColor = Color3.fromRGB(255, 0, 0) elseif status == "YELLOW" then statusColor = Color3.fromRGB(255, 255, 0); radiusColor = Color3.fromRGB(255, 255, 0) end
                 
                 if model == currentMiningOre then radiusColor = Color3.fromRGB(0, 255, 255) end
 
@@ -691,27 +686,33 @@ local function updateHighlights(oreName, instances, isEnabled)
                 local adornment = model:FindFirstChild("OreRadiusVisual")
                 if not adornment then adornment = Instance.new("SphereHandleAdornment", model); adornment.Name = "OreRadiusVisual"; local center = model:IsA("Model") and (model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")) or model; if center then adornment.Adornee = center; adornment.AlwaysOnTop = true; adornment.Transparency = 0.7 end end
                 if adornment then adornment.Radius = MINING_RADIUS; adornment.Color3 = radiusColor end
+
+                -- v1.40: PLAYER DETECTION RADIUS VISUAL (Cannon Style)
+                local statusRad = model:FindFirstChild("OreStatusRadius")
+                if not statusRad then 
+                    statusRad = Instance.new("CylinderHandleAdornment", model); statusRad.Name = "OreStatusRadius"; statusRad.Height = 1; statusRad.Transparency = 0.7; statusRad.AlwaysOnTop = true
+                    local center = model:IsA("Model") and (model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")) or model
+                    if center then statusRad.Adornee = center; statusRad.CFrame = CFrame.new(0, -3, 0) * CFrame.Angles(math.rad(90), 0, 0) end
+                end
+                statusRad.Radius = PLAYER_DETECTION_RADIUS
+                statusRad.Color3 = statusColor
             end
         end
     else
-        for _, model in ipairs(instances) do if model:FindFirstChild("OreHighlight") then model.OreHighlight:Destroy() end; if model:FindFirstChild("OreRadiusVisual") then model.OreRadiusVisual:Destroy() end end
+        for _, model in ipairs(instances) do if model:FindFirstChild("OreHighlight") then model.OreHighlight:Destroy() end; if model:FindFirstChild("OreRadiusVisual") then model.OreRadiusVisual:Destroy() end; if model:FindFirstChild("OreStatusRadius") then model.OreStatusRadius:Destroy() end end
     end
 end
 
 local function updatePaths()
-    if tick() - lastPathUpdate < 2.0 then return end -- Update paths every 2 seconds
+    if tick() - lastPathUpdate < 2.0 then return end
     lastPathUpdate = tick()
-    
     pathVisualsFolder:ClearAllChildren()
-    -- Only draw paths if auto mine is off (debugging) OR if we want to see potential paths
-    -- Drawing for top 10 enabled ores
     local char = LocalPlayer.Character; if not char then return end; local root = char:FindFirstChild("HumanoidRootPart"); if not root then return end; local startPos = root.Position
     for oreName, isEnabled in pairs(oreToggleStates) do
         if isEnabled and lastScanResults[oreName] then
             local sortedOres = {}
             for _, ore in ipairs(lastScanResults[oreName].Instances) do if isValidOre(ore) then local p = getOrePosition(ore); table.insert(sortedOres, {Ore = ore, Pos = p, Dist = (startPos - p).Magnitude}) end end
             table.sort(sortedOres, function(a,b) return a.Dist < b.Dist end)
-            
             for i = 1, math.min(10, #sortedOres) do
                 local entry = sortedOres[i]
                 task.spawn(function()
@@ -741,13 +742,7 @@ local function scanOres()
                 local pos = getOrePosition(descendant)
                 if pos then 
                     local n = descendant.Name
-                    if not current[n] then 
-                        current[n] = {Count=0, Instances={}} 
-                        -- v1.31: Add to Priority List if new
-                        if not table.find(orePriorityList, n) then
-                            table.insert(orePriorityList, n)
-                        end
-                    end
+                    if not current[n] then current[n] = {Count=0, Instances={}}; if not table.find(orePriorityList, n) then table.insert(orePriorityList, n) end end
                     table.insert(current[n].Instances, descendant)
                     current[n].Count = current[n].Count + 1 
                 end
@@ -761,14 +756,10 @@ end
 
 local function refreshGui()
     local data = scanOres(); updateEntityESP(); updatePaths()
-    
-    -- === UPDATE TARGET LIST ===
     local targetSeen = {}
     if data then
         for name, info in pairs(data) do
-            targetSeen[name] = true
-            local fname = "Frame_"..name
-            local f = TargetList:FindFirstChild(fname)
+            targetSeen[name] = true; local fname = "Frame_"..name; local f = TargetList:FindFirstChild(fname)
             if not f then
                 f = Instance.new("Frame"); f.Name = fname; f.Size = UDim2.new(1,-5,0,30); f.BackgroundColor3 = Color3.fromRGB(40,40,40); f.Parent = TargetList; Instance.new("UICorner", f).CornerRadius = UDim.new(0,4)
                 Instance.new("TextLabel", f).Name = "InfoLabel"; f.InfoLabel.Size = UDim2.new(0.65,0,1,0); f.InfoLabel.Position = UDim2.new(0,5,0,0); f.InfoLabel.BackgroundTransparency = 1; f.InfoLabel.TextXAlignment = Enum.TextXAlignment.Left; f.InfoLabel.TextColor3 = Color3.fromRGB(220,220,220); f.InfoLabel.Font = Enum.Font.GothamMedium; f.InfoLabel.TextSize = 12
@@ -781,26 +772,18 @@ local function refreshGui()
     for _, c in ipairs(TargetList:GetChildren()) do if c:IsA("Frame") and not targetSeen[c.Name:gsub("Frame_","")] then c:Destroy() end end
     TargetList.CanvasSize = UDim2.new(0,0,0,TargetLayout.AbsoluteContentSize.Y)
 
-    -- === UPDATE PRIORITY LIST ===
     local prioritySeen = {}
     for i, name in ipairs(orePriorityList) do
-        prioritySeen[name] = true
-        local fname = "PFrame_"..name
-        local f = PriorityList:FindFirstChild(fname)
+        prioritySeen[name] = true; local fname = "PFrame_"..name; local f = PriorityList:FindFirstChild(fname)
         if not f then
             f = Instance.new("Frame"); f.Name = fname; f.Size = UDim2.new(1,-5,0,30); f.BackgroundColor3 = Color3.fromRGB(40,40,40); f.Parent = PriorityList; Instance.new("UICorner", f).CornerRadius = UDim.new(0,4)
             Instance.new("TextLabel", f).Name = "NameLabel"; f.NameLabel.Size = UDim2.new(0.6,0,1,0); f.NameLabel.Position = UDim2.new(0,5,0,0); f.NameLabel.BackgroundTransparency = 1; f.NameLabel.TextXAlignment = Enum.TextXAlignment.Left; f.NameLabel.TextColor3 = Color3.fromRGB(220,220,220); f.NameLabel.Font = Enum.Font.GothamMedium; f.NameLabel.TextSize = 12
-            
-            -- UP Button
             local bUp = Instance.new("TextButton", f); bUp.Name = "UpBtn"; bUp.Size = UDim2.new(0.15,0,0.8,0); bUp.Position = UDim2.new(0.62,0,0.1,0); bUp.BackgroundColor3 = Color3.fromRGB(60,60,60); bUp.Text = "▲"; bUp.TextColor3 = Color3.fromRGB(255,255,255); bUp.Font = Enum.Font.GothamBold; bUp.TextSize = 10; Instance.new("UICorner", bUp).CornerRadius = UDim.new(0,4)
             bUp.MouseButton1Click:Connect(function() movePriority(name, -1); refreshGui() end)
-            
-            -- DOWN Button
             local bDown = Instance.new("TextButton", f); bDown.Name = "DownBtn"; bDown.Size = UDim2.new(0.15,0,0.8,0); bDown.Position = UDim2.new(0.8,0,0.1,0); bDown.BackgroundColor3 = Color3.fromRGB(60,60,60); bDown.Text = "▼"; bDown.TextColor3 = Color3.fromRGB(255,255,255); bDown.Font = Enum.Font.GothamBold; bDown.TextSize = 10; Instance.new("UICorner", bDown).CornerRadius = UDim.new(0,4)
             bDown.MouseButton1Click:Connect(function() movePriority(name, 1); refreshGui() end)
         end
-        f.LayoutOrder = i -- Strict Order
-        f.NameLabel.Text = string.format("%d. %s", i, name)
+        f.LayoutOrder = i; f.NameLabel.Text = string.format("%d. %s", i, name)
     end
     for _, c in ipairs(PriorityList:GetChildren()) do if c:IsA("Frame") and not prioritySeen[c.Name:gsub("PFrame_","")] then c:Destroy() end end
     PriorityList.CanvasSize = UDim2.new(0,0,0,PriorityLayout.AbsoluteContentSize.Y)
