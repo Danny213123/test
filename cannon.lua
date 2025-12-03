@@ -30,7 +30,7 @@ local INTERACTION_DISTANCE = 5
 local DETECTION_RADIUS = 40 -- Radius within which auto-walk triggers
 local WALK_ANIM_ID = "rbxassetid://180426354"
 
-local isEnabled = false -- Toggle state
+local isEnabled = true -- Toggle state
 local isBusy = false -- Debounce to prevent overlapping actions
 
 -- 2. GUI CREATION
