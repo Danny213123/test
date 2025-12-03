@@ -1,16 +1,14 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.52)
-    - v1.52 UPDATE: Added 10s Respawn Timer.
-        - Pauses logic for 10 seconds after respawning to allow Cannon Bot to launch player.
-    - v1.51 UPDATE: Fixed "Stop Mining if Player Walks In" Bug.
-    - v1.50 UPDATE: "Why am I stuck?" Diagnostics.
-    - v1.49 UPDATE: Fixed "Stuck Scanning" Loop.
-    - v1.48 UPDATE: Fixed "Flickering Path" Bug.
-    - v1.47 UPDATE: Fixed "Standing in front but not mining".
-    - v1.46 UPDATE: Fixed "Yellow instead of Red" Bug.
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.56)
+    - v1.56 UPDATE: Added "Visuals" Toggle (Hide/Show all ESP/Radius/Paths).
+    - v1.56 UPDATE: Added 60s Idle/Stuck Reset.
+        - If character doesn't move >2 studs for 60s, it resets (BreakJoints).
+        - Status label shows countdown when stuck for >5s.
+    - v1.56 UPDATE: Fixed Player ESP Blinking (Optimized update logic).
+    - v1.55 UPDATE: Restored Lenient Obstacle Checks.
+    - v1.54 UPDATE: Fixed "Unreachable" for close ores + 3D Radius Visuals.
     - Scans for ores in the "Rocks" folder
-    - ESP Highlights + Radius Visualization
-    - FEATURE: Player ESP Toggle & AUTO MINE Toggle
+    - FEATURE: Player ESP Toggle & AUTO MINE Toggle & VISUALS Toggle
     - FEATURE: AUTO COMBAT (Switches to Sword if mob nearby)
 ]]
 
@@ -28,7 +26,7 @@ local LocalPlayer = Players.LocalPlayer
 -- 1. SETTINGS & STATE
 local SCAN_DELAY = 0.2 
 local MINING_RADIUS = 12.0          
-local PLAYER_DETECTION_RADIUS = 25  
+local PLAYER_DETECTION_RADIUS = 45  
 local SURFACE_STOP_DISTANCE = 3.5   
 local COMBAT_RADIUS = 15 
 local HIGHLIGHT_LIMIT = 30 
@@ -38,6 +36,7 @@ local ORE_BLACKLIST_DURATION = 300
 local MAX_COMBAT_TIME = 15        
 local COMBAT_BLACKLIST_DURATION = 60 
 local TIMEOUT_PROXIMITY_THRESHOLD = 40 
+local IDLE_RESET_TIME = 60 -- Seconds before resetting character if stuck
 
 local activeHighlights = {} 
 local oreToggleStates = {} 
@@ -49,6 +48,7 @@ local mobBlacklist = {}
 
 local playerEspEnabled = false 
 local autoMineEnabled = false 
+local visualsEnabled = true -- v1.56: New Toggle State
 local currentMiningOre = nil 
 local currentOreStartTime = 0 
 local currentMaxTime = 60 
@@ -58,7 +58,11 @@ local currentCombatTarget = nil
 local currentCombatStartTime = 0
 
 local lastPathUpdate = 0 
-local lastRespawnTime = 0 -- v1.52: Track respawn time
+local lastRespawnTime = 0 
+
+-- Idle Monitor State (v1.56)
+local lastIdlePos = Vector3.new(0,0,0)
+local lastIdleTime = tick()
 
 -- UI States
 local isTargetDropdownOpen = false 
@@ -105,7 +109,7 @@ if not ScreenGui.Parent then ScreenGui.Parent = LocalPlayer:WaitForChild("Player
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "ScannerFrame"
-MainFrame.Size = UDim2.new(0, 260, 0, 600) 
+MainFrame.Size = UDim2.new(0, 260, 0, 640) -- Slightly taller
 MainFrame.Position = UDim2.new(0.8, 0, 0.1, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 MainFrame.BorderSizePixel = 0
@@ -114,12 +118,12 @@ MainFrame.Parent = ScreenGui
 makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.52 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.56 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
 -- Controls Container
-local ControlsContainer = Instance.new("Frame"); ControlsContainer.Name = "Controls"; ControlsContainer.Size = UDim2.new(1, 0, 0, 80); ControlsContainer.Position = UDim2.new(0, 0, 0, 35); ControlsContainer.BackgroundTransparency = 1; ControlsContainer.Parent = MainFrame
+local ControlsContainer = Instance.new("Frame"); ControlsContainer.Name = "Controls"; ControlsContainer.Size = UDim2.new(1, 0, 0, 110); ControlsContainer.Position = UDim2.new(0, 0, 0, 35); ControlsContainer.BackgroundTransparency = 1; ControlsContainer.Parent = MainFrame
 
 local function createControl(name, yPos, text, color)
     local f = Instance.new("Frame"); f.Name = name; f.Size = UDim2.new(1, -10, 0, 30); f.Position = UDim2.new(0, 5, 0, yPos); f.BackgroundColor3 = Color3.fromRGB(35, 35, 35); f.Parent = ControlsContainer
@@ -132,12 +136,15 @@ end
 
 local PE_Toggle = createControl("PlayerESP_Control", 0, "Player ESP", Color3.fromRGB(255, 80, 80))
 local AM_Toggle = createControl("AutoMine_Control", 35, "Auto Mine/Attack", Color3.fromRGB(80, 255, 255))
+-- v1.56: Visuals Toggle
+local VS_Toggle = createControl("Visuals_Control", 70, "Visuals", Color3.fromRGB(255, 200, 80))
+VS_Toggle.Text = "ON"; VS_Toggle.BackgroundColor3 = Color3.fromRGB(255, 150, 0) -- Default ON
 
 -- === DROPDOWNS ===
-local TargetHeader = Instance.new("Frame"); TargetHeader.Size = UDim2.new(1, -10, 0, 25); TargetHeader.Position = UDim2.new(0, 5, 0, 115); TargetHeader.BackgroundColor3 = Color3.fromRGB(45, 45, 45); TargetHeader.Parent = MainFrame; Instance.new("UICorner", TargetHeader).CornerRadius = UDim.new(0, 4)
+local TargetHeader = Instance.new("Frame"); TargetHeader.Size = UDim2.new(1, -10, 0, 25); TargetHeader.Position = UDim2.new(0, 5, 0, 150); TargetHeader.BackgroundColor3 = Color3.fromRGB(45, 45, 45); TargetHeader.Parent = MainFrame; Instance.new("UICorner", TargetHeader).CornerRadius = UDim.new(0, 4)
 local TargetBtn = Instance.new("TextButton"); TargetBtn.Size = UDim2.new(1, 0, 1, 0); TargetBtn.BackgroundTransparency = 1; TargetBtn.Text = "Target Selection ▼"; TargetBtn.TextColor3 = Color3.fromRGB(200, 200, 200); TargetBtn.Font = Enum.Font.GothamBold; TargetBtn.TextSize = 12; TargetBtn.Parent = TargetHeader
 
-local TargetList = Instance.new("ScrollingFrame"); TargetList.Name = "TargetList"; TargetList.Size = UDim2.new(1, -10, 0, 0); TargetList.Position = UDim2.new(0, 5, 0, 145); TargetList.BackgroundTransparency = 1; TargetList.ScrollBarThickness = 2; TargetList.Visible = false; TargetList.Parent = MainFrame
+local TargetList = Instance.new("ScrollingFrame"); TargetList.Name = "TargetList"; TargetList.Size = UDim2.new(1, -10, 0, 0); TargetList.Position = UDim2.new(0, 5, 0, 180); TargetList.BackgroundTransparency = 1; TargetList.ScrollBarThickness = 2; TargetList.Visible = false; TargetList.Parent = MainFrame
 local TargetLayout = Instance.new("UIListLayout"); TargetLayout.Padding = UDim.new(0, 2); TargetLayout.SortOrder = Enum.SortOrder.Name; TargetLayout.Parent = TargetList
 
 TargetBtn.MouseButton1Click:Connect(function()
@@ -147,10 +154,10 @@ TargetBtn.MouseButton1Click:Connect(function()
     else TargetList.Size = UDim2.new(1, -10, 0, 0); TargetBtn.Text = "Target Selection ▶" end
 end)
 
-local PriorityHeader = Instance.new("Frame"); PriorityHeader.Name = "PriorityHeader"; PriorityHeader.Size = UDim2.new(1, -10, 0, 25); PriorityHeader.Position = UDim2.new(0, 5, 0, 270); PriorityHeader.BackgroundColor3 = Color3.fromRGB(45, 45, 45); PriorityHeader.Parent = MainFrame; Instance.new("UICorner", PriorityHeader).CornerRadius = UDim.new(0, 4)
+local PriorityHeader = Instance.new("Frame"); PriorityHeader.Name = "PriorityHeader"; PriorityHeader.Size = UDim2.new(1, -10, 0, 25); PriorityHeader.Position = UDim2.new(0, 5, 0, 305); PriorityHeader.BackgroundColor3 = Color3.fromRGB(45, 45, 45); PriorityHeader.Parent = MainFrame; Instance.new("UICorner", PriorityHeader).CornerRadius = UDim.new(0, 4)
 local PriorityBtn = Instance.new("TextButton"); PriorityBtn.Name = "PriorityBtn"; PriorityBtn.Size = UDim2.new(1, 0, 1, 0); PriorityBtn.BackgroundTransparency = 1; PriorityBtn.Text = "Priority Reorder ▶"; PriorityBtn.TextColor3 = Color3.fromRGB(200, 200, 200); PriorityBtn.Font = Enum.Font.GothamBold; PriorityBtn.TextSize = 12; PriorityBtn.Parent = PriorityHeader
 
-local PriorityList = Instance.new("ScrollingFrame"); PriorityList.Name = "PriorityList"; PriorityList.Size = UDim2.new(1, -10, 0, 0); PriorityList.Position = UDim2.new(0, 5, 0, 300); PriorityList.BackgroundTransparency = 1; PriorityList.ScrollBarThickness = 2; PriorityList.Visible = false; PriorityList.Parent = MainFrame
+local PriorityList = Instance.new("ScrollingFrame"); PriorityList.Name = "PriorityList"; PriorityList.Size = UDim2.new(1, -10, 0, 0); PriorityList.Position = UDim2.new(0, 5, 0, 335); PriorityList.BackgroundTransparency = 1; PriorityList.ScrollBarThickness = 2; PriorityList.Visible = false; PriorityList.Parent = MainFrame
 local PriorityLayout = Instance.new("UIListLayout"); PriorityLayout.Padding = UDim.new(0, 2); PriorityLayout.SortOrder = Enum.SortOrder.LayoutOrder; PriorityLayout.Parent = PriorityList
 
 PriorityBtn.MouseButton1Click:Connect(function()
@@ -161,9 +168,9 @@ PriorityBtn.MouseButton1Click:Connect(function()
 end)
 
 -- FOOTER (Status & Debug)
-local StatusLabel = Instance.new("TextLabel"); StatusLabel.Name = "StatusLabel"; StatusLabel.Size = UDim2.new(1, -10, 0, 20); StatusLabel.Position = UDim2.new(0, 5, 0, 430); StatusLabel.BackgroundTransparency = 0.8; StatusLabel.BackgroundColor3 = Color3.new(0,0,0); StatusLabel.Text = "Status: Idle"; StatusLabel.TextColor3 = Color3.fromRGB(200, 200, 200); StatusLabel.Font = Enum.Font.Gotham; StatusLabel.TextSize = 11; StatusLabel.Parent = MainFrame
+local StatusLabel = Instance.new("TextLabel"); StatusLabel.Name = "StatusLabel"; StatusLabel.Size = UDim2.new(1, -10, 0, 20); StatusLabel.Position = UDim2.new(0, 5, 0, 465); StatusLabel.BackgroundTransparency = 0.8; StatusLabel.BackgroundColor3 = Color3.new(0,0,0); StatusLabel.Text = "Status: Idle"; StatusLabel.TextColor3 = Color3.fromRGB(200, 200, 200); StatusLabel.Font = Enum.Font.Gotham; StatusLabel.TextSize = 11; StatusLabel.Parent = MainFrame
 
-local DebugFrame = Instance.new("ScrollingFrame"); DebugFrame.Name = "DebugConsole"; DebugFrame.Size = UDim2.new(1, -10, 0, 130); DebugFrame.Position = UDim2.new(0, 5, 0, 455); DebugFrame.BackgroundTransparency = 0.5; DebugFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10); DebugFrame.ScrollBarThickness = 2; DebugFrame.Parent = MainFrame
+local DebugFrame = Instance.new("ScrollingFrame"); DebugFrame.Name = "DebugConsole"; DebugFrame.Size = UDim2.new(1, -10, 0, 130); DebugFrame.Position = UDim2.new(0, 5, 0, 490); DebugFrame.BackgroundTransparency = 0.5; DebugFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10); DebugFrame.ScrollBarThickness = 2; DebugFrame.Parent = MainFrame
 local DebugLayout = Instance.new("UIListLayout"); DebugLayout.Padding = UDim.new(0, 2); DebugLayout.Parent = DebugFrame
 DebugLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function() DebugFrame.CanvasSize = UDim2.new(0, 0, 0, DebugLayout.AbsoluteContentSize.Y); DebugFrame.CanvasPosition = Vector2.new(0, DebugLayout.AbsoluteContentSize.Y) end)
 
@@ -195,15 +202,19 @@ end
 local function isPathBlockedByObstacle(character)
     local root = character:FindFirstChild("HumanoidRootPart")
     if not root then return false end
+    
     local rayParams = RaycastParams.new()
     rayParams.FilterDescendantsInstances = {character, existingFolder} 
     rayParams.FilterType = Enum.RaycastFilterType.Exclude
-    local direction = root.CFrame.LookVector * 1.5
+    
+    local direction = root.CFrame.LookVector * 1.1
     local result = Workspace:Raycast(root.Position, direction, rayParams)
+    
     if result and result.Instance.CanCollide then
         if result.Instance:IsDescendantOf(Workspace:FindFirstChild("Rocks")) then return false end
-        if result.Position.Y < root.Position.Y - 1 then return false end
-        return true
+        if result.Position.Y < root.Position.Y - 1.5 then return false end
+        
+        return true 
     end
     return false
 end
@@ -228,6 +239,9 @@ local function isSafeToWalk(targetPos)
     local diff = (targetPos - origin)
     local horizontalDir = Vector3.new(diff.X, 0, diff.Z).Unit
     local distance = diff.Magnitude
+    
+    if distance < 8 then return true end
+
     if (origin.Y - targetPos.Y) > 10 and distance > 5 then return false end
     local rayParams = RaycastParams.new()
     rayParams.FilterDescendantsInstances = {char}
@@ -278,9 +292,7 @@ local function setTarget(ore)
     logDebug("Target set: " .. ore.Name .. " (Dist: " .. math.floor(dist) .. ")")
 end
 
--- Returns: "RED" (Blocked), "YELLOW" (Caution), "GREEN" (Free)
 local function getOreStatus(ore)
-    -- v1.51 FIX: If WE are targeting this ore, ignore player proximity (Prevents aborting active mine)
     if ore == currentMiningOre then return "GREEN" end
 
     local orePos = getOrePosition(ore)
@@ -392,16 +404,12 @@ local function getBestOre()
                         local success = pcall(function() path:ComputeAsync(root.Position, entry.Pos) end)
                         if success and path.Status == Enum.PathStatus.Success then
                             return entry.Ore
-                        else
-                            -- v1.50: Log failures
-                            -- logDebug("Ore " .. entry.Ore.Name .. " rejected: Path Failed")
                         end
                         if i % 2 == 0 then task.wait() end 
                     end
                     
                     if not best and #list > 0 then 
                         local closest = list[1]
-                        -- v1.50: Relaxed close range fallback (ignore LOS if < 20 studs)
                         local veryClose = closest.Dist < 20
                         if veryClose or (closest.Dist < 45 and isSafeToWalk(closest.Pos)) then 
                             best = closest.Ore 
@@ -430,16 +438,37 @@ local function updateStatus(text) StatusLabel.Text = "Status: " .. text end
 local function autoMineLoop()
     logDebug("Auto System Started")
     
+    -- Reset idle timer on start
+    lastIdleTime = tick()
+    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if root then lastIdlePos = root.Position end
+
     while autoMineEnabled do
         local success, err = pcall(function()
             local char = LocalPlayer.Character
             if not char then task.wait(0.5); return end
-            
             local hum = char:FindFirstChild("Humanoid")
             local root = char:FindFirstChild("HumanoidRootPart")
             if not hum or not root or hum.Health <= 0 then task.wait(0.5); return end
 
-            -- v1.52: Respawn Timer Check
+            -- v1.56: IDLE/STUCK RESET MONITOR
+            if (root.Position - lastIdlePos).Magnitude > 2 then
+                lastIdlePos = root.Position
+                lastIdleTime = tick()
+            else
+                local idleTime = tick() - lastIdleTime
+                if idleTime > IDLE_RESET_TIME then
+                    logDebug("IDLE TIMEOUT: Resetting Character...")
+                    char:BreakJoints() -- Reset
+                    lastIdleTime = tick() -- Prevent double reset
+                    task.wait(2)
+                    return
+                elseif idleTime > 5 then
+                     StatusLabel.Text = "Status: STUCK! Resetting in " .. math.ceil(IDLE_RESET_TIME - idleTime) .. "s..."
+                end
+            end
+
+            -- Respawn Timer
             if tick() - lastRespawnTime < 10 then
                 StatusLabel.Text = "Status: Waiting for Cannon (" .. math.ceil(10 - (tick() - lastRespawnTime)) .. "s)"
                 task.wait(0.5)
@@ -624,6 +653,9 @@ local function resetState()
     currentCombatTarget = nil
     currentCombatStartTime = 0
     pathVisualsFolder:ClearAllChildren()
+    
+    -- v1.56: Reset idle time on respawn
+    lastIdleTime = tick()
 end
 
 local function enableAnimations(character)
@@ -643,9 +675,8 @@ end
 
 local function onCharacterAdded(char)
     resetState()
-    lastRespawnTime = tick() -- v1.52: Reset respawn timer
+    lastRespawnTime = tick() 
     logDebug("Respawn detected. Waiting 10s for cannon...")
-    
     local hum = char:WaitForChild("Humanoid", 10)
     local root = char:WaitForChild("HumanoidRootPart", 10)
     if hum and root then 
@@ -661,6 +692,19 @@ if LocalPlayer.Character then onCharacterAdded(LocalPlayer.Character) end
 
 -- 8. ENTITY ESP & HIGHLIGHTS
 local function updateEntityESP()
+    -- v1.56: If visuals disabled, cleanup and return
+    if not visualsEnabled then 
+        local living = Workspace:FindFirstChild("Living")
+        if living then
+            for _, model in ipairs(living:GetChildren()) do
+                if model:FindFirstChild("PlayerBox") then model.PlayerBox:Destroy() end
+                if model:FindFirstChild("PlayerTag") then model.PlayerTag:Destroy() end
+                if model:FindFirstChild("MobBox") then model.MobBox:Destroy() end
+            end
+        end
+        return 
+    end
+
     local living = Workspace:FindFirstChild("Living"); if not living then return end
     local char = LocalPlayer.Character; local root = char and char:FindFirstChild("HumanoidRootPart")
     
@@ -687,6 +731,16 @@ local function updateEntityESP()
 end
 
 local function updateHighlights(oreName, instances, isEnabled)
+    -- v1.56: If visuals disabled, destroy all highlights
+    if not visualsEnabled then
+        for _, model in ipairs(instances) do
+            if model:FindFirstChild("OreHighlight") then model.OreHighlight:Destroy() end
+            if model:FindFirstChild("OreRadiusVisual") then model.OreRadiusVisual:Destroy() end
+            if model:FindFirstChild("OreStatusRadius") then model.OreStatusRadius:Destroy() end
+        end
+        return
+    end
+
     if isEnabled then
         local count = 0; local sortedInstances = {}; local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         if root then
@@ -708,12 +762,12 @@ local function updateHighlights(oreName, instances, isEnabled)
                 if not adornment then adornment = Instance.new("SphereHandleAdornment", model); adornment.Name = "OreRadiusVisual"; local center = model:IsA("Model") and (model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")) or model; if center then adornment.Adornee = center; adornment.AlwaysOnTop = true; adornment.Transparency = 0.7 end end
                 if adornment then adornment.Radius = MINING_RADIUS; adornment.Color3 = radiusColor end
 
-                -- v1.40: PLAYER DETECTION RADIUS VISUAL (Cannon Style)
+                -- v1.54: PLAYER DETECTION RADIUS VISUAL (3D Sphere Bubble)
                 local statusRad = model:FindFirstChild("OreStatusRadius")
                 if not statusRad then 
-                    statusRad = Instance.new("CylinderHandleAdornment", model); statusRad.Name = "OreStatusRadius"; statusRad.Height = 1; statusRad.Transparency = 0.7; statusRad.AlwaysOnTop = true
+                    statusRad = Instance.new("SphereHandleAdornment", model); statusRad.Name = "OreStatusRadius"; statusRad.Height = 1; statusRad.Transparency = 0.8; statusRad.AlwaysOnTop = true
                     local center = model:IsA("Model") and (model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")) or model
-                    if center then statusRad.Adornee = center; statusRad.CFrame = CFrame.new(0, -2, 0) * CFrame.Angles(math.rad(90), 0, 0) end
+                    if center then statusRad.Adornee = center; statusRad.CFrame = CFrame.new(0, 0, 0) end
                 end
                 statusRad.Radius = PLAYER_DETECTION_RADIUS
                 statusRad.Color3 = statusColor
@@ -728,6 +782,9 @@ local function updatePaths()
     if tick() - lastPathUpdate < 2.0 then return end
     lastPathUpdate = tick()
     pathVisualsFolder:ClearAllChildren()
+    
+    if not visualsEnabled then return end -- v1.56: Respect toggle
+
     local char = LocalPlayer.Character; if not char then return end; local root = char:FindFirstChild("HumanoidRootPart"); if not root then return end; local startPos = root.Position
     for oreName, isEnabled in pairs(oreToggleStates) do
         if isEnabled and lastScanResults[oreName] then
@@ -812,6 +869,21 @@ end
 
 PE_Toggle.MouseButton1Click:Connect(function() playerEspEnabled = not playerEspEnabled; if playerEspEnabled then PE_Toggle.Text="ON"; PE_Toggle.BackgroundColor3=Color3.fromRGB(255,50,50) else PE_Toggle.Text="OFF"; PE_Toggle.BackgroundColor3=Color3.fromRGB(60,60,60) end; updateEntityESP() end)
 AM_Toggle.MouseButton1Click:Connect(function() autoMineEnabled = not autoMineEnabled; if autoMineEnabled then AM_Toggle.Text="ON"; AM_Toggle.BackgroundColor3=Color3.fromRGB(0,255,255); task.spawn(autoMineLoop) else AM_Toggle.Text="OFF"; AM_Toggle.BackgroundColor3=Color3.fromRGB(60,60,60); currentMiningOre = nil; updateStatus("Idle") end end)
+-- v1.56: Visuals Toggle Logic
+VS_Toggle.MouseButton1Click:Connect(function() 
+    visualsEnabled = not visualsEnabled
+    if visualsEnabled then VS_Toggle.Text="ON"; VS_Toggle.BackgroundColor3=Color3.fromRGB(255, 150, 0)
+    else VS_Toggle.Text="OFF"; VS_Toggle.BackgroundColor3=Color3.fromRGB(60,60,60) end
+    -- Force update to clear/show
+    if lastScanResults then 
+        for n, d in pairs(lastScanResults) do 
+            if oreToggleStates[n] then updateHighlights(n, d.Instances, true) end
+        end 
+    end
+    updateEntityESP()
+    updatePaths()
+end)
+
 CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy(); pathVisualsFolder:Destroy(); for n, d in pairs(lastScanResults) do updateHighlights(n, d.Instances, false) end; autoMineEnabled = false end)
 
 task.spawn(function() while true do refreshGui(); task.wait(SCAN_DELAY) end end)
