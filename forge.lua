@@ -1,12 +1,11 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.56)
-    - v1.56 UPDATE: Added "Visuals" Toggle (Hide/Show all ESP/Radius/Paths).
-    - v1.56 UPDATE: Added 60s Idle/Stuck Reset.
-        - If character doesn't move >2 studs for 60s, it resets (BreakJoints).
-        - Status label shows countdown when stuck for >5s.
-    - v1.56 UPDATE: Fixed Player ESP Blinking (Optimized update logic).
-    - v1.55 UPDATE: Restored Lenient Obstacle Checks.
-    - v1.54 UPDATE: Fixed "Unreachable" for close ores + 3D Radius Visuals.
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.59)
+    - v1.59 UPDATE: Removed MobBox Check (Reverted combat logic).
+        - Mobs no longer require a "MobBox" to be targeted.
+        - Now targets anything in "Living" that isn't a player.
+    - v1.58 UPDATE: Restored MobBox Check & Fixed Path Visuals.
+    - v1.57 UPDATE: Decoupled Combat from Visuals.
+    - v1.56 UPDATE: Added "Visuals" Toggle & Idle Reset.
     - Scans for ores in the "Rocks" folder
     - FEATURE: Player ESP Toggle & AUTO MINE Toggle & VISUALS Toggle
     - FEATURE: AUTO COMBAT (Switches to Sword if mob nearby)
@@ -36,7 +35,7 @@ local ORE_BLACKLIST_DURATION = 300
 local MAX_COMBAT_TIME = 15        
 local COMBAT_BLACKLIST_DURATION = 60 
 local TIMEOUT_PROXIMITY_THRESHOLD = 40 
-local IDLE_RESET_TIME = 60 -- Seconds before resetting character if stuck
+local IDLE_RESET_TIME = 60 
 
 local activeHighlights = {} 
 local oreToggleStates = {} 
@@ -48,7 +47,7 @@ local mobBlacklist = {}
 
 local playerEspEnabled = false 
 local autoMineEnabled = false 
-local visualsEnabled = true -- v1.56: New Toggle State
+local visualsEnabled = true 
 local currentMiningOre = nil 
 local currentOreStartTime = 0 
 local currentMaxTime = 60 
@@ -60,7 +59,7 @@ local currentCombatStartTime = 0
 local lastPathUpdate = 0 
 local lastRespawnTime = 0 
 
--- Idle Monitor State (v1.56)
+-- Idle Monitor State
 local lastIdlePos = Vector3.new(0,0,0)
 local lastIdleTime = tick()
 
@@ -109,7 +108,7 @@ if not ScreenGui.Parent then ScreenGui.Parent = LocalPlayer:WaitForChild("Player
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "ScannerFrame"
-MainFrame.Size = UDim2.new(0, 260, 0, 640) -- Slightly taller
+MainFrame.Size = UDim2.new(0, 260, 0, 640) 
 MainFrame.Position = UDim2.new(0.8, 0, 0.1, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 MainFrame.BorderSizePixel = 0
@@ -118,7 +117,7 @@ MainFrame.Parent = ScreenGui
 makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.56 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.59 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -136,9 +135,8 @@ end
 
 local PE_Toggle = createControl("PlayerESP_Control", 0, "Player ESP", Color3.fromRGB(255, 80, 80))
 local AM_Toggle = createControl("AutoMine_Control", 35, "Auto Mine/Attack", Color3.fromRGB(80, 255, 255))
--- v1.56: Visuals Toggle
 local VS_Toggle = createControl("Visuals_Control", 70, "Visuals", Color3.fromRGB(255, 200, 80))
-VS_Toggle.Text = "ON"; VS_Toggle.BackgroundColor3 = Color3.fromRGB(255, 150, 0) -- Default ON
+VS_Toggle.Text = "ON"; VS_Toggle.BackgroundColor3 = Color3.fromRGB(255, 150, 0)
 
 -- === DROPDOWNS ===
 local TargetHeader = Instance.new("Frame"); TargetHeader.Size = UDim2.new(1, -10, 0, 25); TargetHeader.Position = UDim2.new(0, 5, 0, 150); TargetHeader.BackgroundColor3 = Color3.fromRGB(45, 45, 45); TargetHeader.Parent = MainFrame; Instance.new("UICorner", TargetHeader).CornerRadius = UDim.new(0, 4)
@@ -348,7 +346,9 @@ local function getNearbyMob()
         if model:IsA("Model") and model ~= char then
             if mobBlacklist[model] and (tick() - mobBlacklist[model] < COMBAT_BLACKLIST_DURATION) then continue end
             if not Players:FindFirstChild(model.Name) then
-                if not model:FindFirstChild("MobBox") then continue end 
+                -- v1.59: Removed MobBox check as requested
+                -- if not model:FindFirstChild("MobBox") then continue end 
+
                 local pivot = model:GetPivot(); local hum = model:FindFirstChild("Humanoid")
                 if pivot and hum and hum.Health > 0 then
                     local dist = (pivot.Position - root.Position).Magnitude
@@ -364,7 +364,6 @@ end
 local function getBestOre()
     local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart"); if not root then return nil end
     logDebug("--- Scanning (Priority Mode) ---")
-    
     for _, oreName in ipairs(orePriorityList) do
         if oreToggleStates[oreName] and lastScanResults[oreName] then
             local greenCandidates = {}; local yellowCandidates = {}; local count = 0
@@ -380,56 +379,30 @@ local function getBestOre()
                     end
                 end
             end
-            
             if count > 0 then
-                local function selectFromList(list, label)
+                local function selectFromList(list)
                     table.sort(list, function(a, b) return a.Dist < b.Dist end)
-                    local best = nil
-                    local checkLimit = math.min(20, #list) 
-                    
+                    local best = nil; local minWps = math.huge; local checkLimit = math.min(10, #list) 
                     for i = 1, checkLimit do
-                        if getNearbyMob() then 
-                            logDebug("Scan Aborted: Enemy Nearby!")
-                            return nil 
-                        end 
                         local entry = list[i]
-                        
-                        if entry.Dist < 60 and isSafeToWalk(entry.Pos) and hasLineOfSight(root.Position, entry.Pos, {LocalPlayer.Character, entry.Ore}) then
-                            logDebug("Instant Match (LoS): " .. entry.Ore.Name)
-                            return entry.Ore
-                        end
-
-                        StatusLabel.Text = string.format("Pathing: %s (%d/%d)...", entry.Ore.Name, i, checkLimit)
-                        local path = PathfindingService:CreatePath({AgentRadius = 2.0, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20 }})
+                        local path = PathfindingService:CreatePath({AgentRadius = 2.5, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20 }})
                         local success = pcall(function() path:ComputeAsync(root.Position, entry.Pos) end)
                         if success and path.Status == Enum.PathStatus.Success then
-                            return entry.Ore
+                            local wps = #path:GetWaypoints(); if wps < minWps then minWps = wps; best = entry.Ore end
                         end
-                        if i % 2 == 0 then task.wait() end 
+                        if i % 5 == 0 then task.wait() end
                     end
-                    
-                    if not best and #list > 0 then 
-                        local closest = list[1]
-                        local veryClose = closest.Dist < 20
-                        if veryClose or (closest.Dist < 45 and isSafeToWalk(closest.Pos)) then 
-                            best = closest.Ore 
-                            logDebug("Fallback used for " .. best.Name)
-                        else
-                            logDebug("Ore " .. closest.Ore.Name .. " rejected: Unsafe / No LOS")
-                        end 
-                    end
+                    if not best and #list > 0 then local closest = list[1]; if closest.Dist < 25 and isSafeToWalk(closest.Pos) then best = closest.Ore end end
                     return best
                 end
-
-                local found = selectFromList(greenCandidates, "Green")
+                local found = selectFromList(greenCandidates)
                 if found then logDebug("Priority Hit: " .. oreName); return found end
-                found = selectFromList(yellowCandidates, "Yellow")
+                found = selectFromList(yellowCandidates)
                 if found then logDebug("Priority Hit (Yellow): " .. oreName); return found end
             end
         end
     end
     logDebug("No reachable ores found.")
-    StatusLabel.Text = "Status: Scan Failed (No Paths)"
     return nil
 end
 
@@ -493,7 +466,7 @@ local function autoMineLoop()
                 currentCombatTarget = nil
             end
             
-            -- IMMEDIATE NEARBY ORE
+            -- IMMEDIATE NEARBY ORE (Respect Priority)
             local foundNearby = false
             if currentMiningOre and isValidOre(currentMiningOre) then
                 local p = getOrePosition(currentMiningOre)
@@ -781,6 +754,7 @@ end
 local function updatePaths()
     if tick() - lastPathUpdate < 2.0 then return end
     lastPathUpdate = tick()
+    
     pathVisualsFolder:ClearAllChildren()
     
     if not visualsEnabled then return end -- v1.56: Respect toggle
@@ -872,8 +846,14 @@ AM_Toggle.MouseButton1Click:Connect(function() autoMineEnabled = not autoMineEna
 -- v1.56: Visuals Toggle Logic
 VS_Toggle.MouseButton1Click:Connect(function() 
     visualsEnabled = not visualsEnabled
-    if visualsEnabled then VS_Toggle.Text="ON"; VS_Toggle.BackgroundColor3=Color3.fromRGB(255, 150, 0)
-    else VS_Toggle.Text="OFF"; VS_Toggle.BackgroundColor3=Color3.fromRGB(60,60,60) end
+    if visualsEnabled then 
+        VS_Toggle.Text="ON"; VS_Toggle.BackgroundColor3=Color3.fromRGB(255, 150, 0)
+        -- Force Immediate Refresh
+        lastPathUpdate = 0 
+    else 
+        VS_Toggle.Text="OFF"; VS_Toggle.BackgroundColor3=Color3.fromRGB(60,60,60) 
+    end
+    
     -- Force update to clear/show
     if lastScanResults then 
         for n, d in pairs(lastScanResults) do 
