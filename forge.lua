@@ -1,12 +1,14 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.59)
-    - v1.59 UPDATE: Removed MobBox Check (Reverted combat logic).
-        - Mobs no longer require a "MobBox" to be targeted.
-        - Now targets anything in "Living" that isn't a player.
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.60)
+    - v1.60 UPDATE: Added Settings System (Save/Load).
+        - Saves configuration to 'orescanner_settings.json'.
+        - Persists: Ore Toggles, Priority List, ESP Settings, Auto Mine state.
+    - v1.60 UPDATE: Fixed Visuals Toggle Bug.
+        - "Visuals OFF" now performs an immediate deep clean of all ESP objects.
+    - v1.59 UPDATE: Removed MobBox Check.
     - v1.58 UPDATE: Restored MobBox Check & Fixed Path Visuals.
-    - v1.57 UPDATE: Decoupled Combat from Visuals.
-    - v1.56 UPDATE: Added "Visuals" Toggle & Idle Reset.
     - Scans for ores in the "Rocks" folder
+    - ESP Highlights + Radius Visualization
     - FEATURE: Player ESP Toggle & AUTO MINE Toggle & VISUALS Toggle
     - FEATURE: AUTO COMBAT (Switches to Sword if mob nearby)
 ]]
@@ -19,8 +21,10 @@ local PathfindingService = game:GetService("PathfindingService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
 
 local LocalPlayer = Players.LocalPlayer
+local SETTINGS_FILE = "orescanner_settings.json"
 
 -- 1. SETTINGS & STATE
 local SCAN_DELAY = 0.2 
@@ -45,6 +49,7 @@ local lastScanResults = {}
 local oreBlacklist = {} 
 local mobBlacklist = {} 
 
+-- Default States (Will be overwritten by LoadSettings)
 local playerEspEnabled = false 
 local autoMineEnabled = false 
 local visualsEnabled = true 
@@ -82,6 +87,37 @@ local pathVisualsFolder = Instance.new("Folder")
 pathVisualsFolder.Name = "OrePaths"
 pathVisualsFolder.Parent = Workspace
 
+-- SAVE / LOAD SYSTEM
+local function saveSettings()
+    local data = {
+        oreToggleStates = oreToggleStates,
+        orePriorityList = orePriorityList,
+        playerEspEnabled = playerEspEnabled,
+        autoMineEnabled = autoMineEnabled,
+        visualsEnabled = visualsEnabled
+    }
+    pcall(function()
+        if writefile then
+            writefile(SETTINGS_FILE, HttpService:JSONEncode(data))
+        end
+    end)
+end
+
+local function loadSettings()
+    pcall(function()
+        if isfile and isfile(SETTINGS_FILE) then
+            local data = HttpService:JSONDecode(readfile(SETTINGS_FILE))
+            if data.oreToggleStates then oreToggleStates = data.oreToggleStates end
+            if data.orePriorityList then orePriorityList = data.orePriorityList end
+            if data.playerEspEnabled ~= nil then playerEspEnabled = data.playerEspEnabled end
+            if data.autoMineEnabled ~= nil then autoMineEnabled = data.autoMineEnabled end
+            if data.visualsEnabled ~= nil then visualsEnabled = data.visualsEnabled end
+        end
+    end)
+end
+
+loadSettings() -- Load on startup
+
 -- DRAGGABLE FUNCTION
 local function makeDraggable(gui)
     local dragging, dragInput, dragStart, startPos
@@ -117,7 +153,7 @@ MainFrame.Parent = ScreenGui
 makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.59 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.60 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -136,7 +172,12 @@ end
 local PE_Toggle = createControl("PlayerESP_Control", 0, "Player ESP", Color3.fromRGB(255, 80, 80))
 local AM_Toggle = createControl("AutoMine_Control", 35, "Auto Mine/Attack", Color3.fromRGB(80, 255, 255))
 local VS_Toggle = createControl("Visuals_Control", 70, "Visuals", Color3.fromRGB(255, 200, 80))
-VS_Toggle.Text = "ON"; VS_Toggle.BackgroundColor3 = Color3.fromRGB(255, 150, 0)
+
+-- Update UI buttons based on loaded settings
+if playerEspEnabled then PE_Toggle.Text="ON"; PE_Toggle.BackgroundColor3=Color3.fromRGB(255,50,50) end
+if autoMineEnabled then AM_Toggle.Text="ON"; AM_Toggle.BackgroundColor3=Color3.fromRGB(0,255,255) end
+if visualsEnabled then VS_Toggle.Text="ON"; VS_Toggle.BackgroundColor3=Color3.fromRGB(255, 150, 0) end
+
 
 -- === DROPDOWNS ===
 local TargetHeader = Instance.new("Frame"); TargetHeader.Size = UDim2.new(1, -10, 0, 25); TargetHeader.Position = UDim2.new(0, 5, 0, 150); TargetHeader.BackgroundColor3 = Color3.fromRGB(45, 45, 45); TargetHeader.Parent = MainFrame; Instance.new("UICorner", TargetHeader).CornerRadius = UDim.new(0, 4)
@@ -271,6 +312,7 @@ local function movePriority(oreName, direction)
     elseif direction == 1 and idx < #orePriorityList then
         table.remove(orePriorityList, idx); table.insert(orePriorityList, idx + 1, oreName)
     end
+    saveSettings() -- Save on change
 end
 
 local function setTarget(ore)
@@ -346,7 +388,6 @@ local function getNearbyMob()
         if model:IsA("Model") and model ~= char then
             if mobBlacklist[model] and (tick() - mobBlacklist[model] < COMBAT_BLACKLIST_DURATION) then continue end
             if not Players:FindFirstChild(model.Name) then
-                -- v1.59: Removed MobBox check as requested
                 -- if not model:FindFirstChild("MobBox") then continue end 
 
                 local pivot = model:GetPivot(); local hum = model:FindFirstChild("Humanoid")
@@ -704,7 +745,7 @@ local function updateEntityESP()
 end
 
 local function updateHighlights(oreName, instances, isEnabled)
-    -- v1.56: If visuals disabled, destroy all highlights
+    -- v1.60 FIX: Check global visualsEnabled first
     if not visualsEnabled then
         for _, model in ipairs(instances) do
             if model:FindFirstChild("OreHighlight") then model.OreHighlight:Destroy() end
@@ -754,7 +795,6 @@ end
 local function updatePaths()
     if tick() - lastPathUpdate < 2.0 then return end
     lastPathUpdate = tick()
-    
     pathVisualsFolder:ClearAllChildren()
     
     if not visualsEnabled then return end -- v1.56: Respect toggle
@@ -794,7 +834,13 @@ local function scanOres()
                 local pos = getOrePosition(descendant)
                 if pos then 
                     local n = descendant.Name
-                    if not current[n] then current[n] = {Count=0, Instances={}}; if not table.find(orePriorityList, n) then table.insert(orePriorityList, n) end end
+                    if not current[n] then 
+                        current[n] = {Count=0, Instances={}} 
+                        -- v1.31: Add to Priority List if new
+                        if not table.find(orePriorityList, n) then
+                            table.insert(orePriorityList, n)
+                        end
+                    end
                     table.insert(current[n].Instances, descendant)
                     current[n].Count = current[n].Count + 1 
                 end
@@ -816,7 +862,12 @@ local function refreshGui()
                 f = Instance.new("Frame"); f.Name = fname; f.Size = UDim2.new(1,-5,0,30); f.BackgroundColor3 = Color3.fromRGB(40,40,40); f.Parent = TargetList; Instance.new("UICorner", f).CornerRadius = UDim.new(0,4)
                 Instance.new("TextLabel", f).Name = "InfoLabel"; f.InfoLabel.Size = UDim2.new(0.65,0,1,0); f.InfoLabel.Position = UDim2.new(0,5,0,0); f.InfoLabel.BackgroundTransparency = 1; f.InfoLabel.TextXAlignment = Enum.TextXAlignment.Left; f.InfoLabel.TextColor3 = Color3.fromRGB(220,220,220); f.InfoLabel.Font = Enum.Font.GothamMedium; f.InfoLabel.TextSize = 12
                 local b = Instance.new("TextButton", f); b.Name = "ToggleBtn"; b.Size = UDim2.new(0.3,0,0.8,0); b.Position = UDim2.new(0.68,0,0.1,0); b.BackgroundColor3 = Color3.fromRGB(60,60,60); b.Text = "OFF"; b.TextColor3 = Color3.fromRGB(255,255,255); b.Font = Enum.Font.GothamBold; b.TextSize = 11; Instance.new("UICorner", b).CornerRadius = UDim.new(0,4)
-                b.MouseButton1Click:Connect(function() oreToggleStates[name] = not oreToggleStates[name]; if oreToggleStates[name] then b.Text="ON"; b.BackgroundColor3=Color3.fromRGB(0,170,0) else b.Text="OFF"; b.BackgroundColor3=Color3.fromRGB(60,60,60) if lastScanResults[name] then updateHighlights(name, lastScanResults[name].Instances, false) end end; scanOres(); updatePaths() end)
+                b.MouseButton1Click:Connect(function() 
+                    oreToggleStates[name] = not oreToggleStates[name]; 
+                    if oreToggleStates[name] then b.Text="ON"; b.BackgroundColor3=Color3.fromRGB(0,170,0) else b.Text="OFF"; b.BackgroundColor3=Color3.fromRGB(60,60,60) if lastScanResults[name] then updateHighlights(name, lastScanResults[name].Instances, false) end end; 
+                    saveSettings() -- v1.60: Save
+                    scanOres(); updatePaths() 
+                end)
             end
             f.InfoLabel.Text = string.format("%s - [%d]", name, info.Count)
         end
@@ -841,25 +892,42 @@ local function refreshGui()
     PriorityList.CanvasSize = UDim2.new(0,0,0,PriorityLayout.AbsoluteContentSize.Y)
 end
 
-PE_Toggle.MouseButton1Click:Connect(function() playerEspEnabled = not playerEspEnabled; if playerEspEnabled then PE_Toggle.Text="ON"; PE_Toggle.BackgroundColor3=Color3.fromRGB(255,50,50) else PE_Toggle.Text="OFF"; PE_Toggle.BackgroundColor3=Color3.fromRGB(60,60,60) end; updateEntityESP() end)
-AM_Toggle.MouseButton1Click:Connect(function() autoMineEnabled = not autoMineEnabled; if autoMineEnabled then AM_Toggle.Text="ON"; AM_Toggle.BackgroundColor3=Color3.fromRGB(0,255,255); task.spawn(autoMineLoop) else AM_Toggle.Text="OFF"; AM_Toggle.BackgroundColor3=Color3.fromRGB(60,60,60); currentMiningOre = nil; updateStatus("Idle") end end)
--- v1.56: Visuals Toggle Logic
+PE_Toggle.MouseButton1Click:Connect(function() 
+    playerEspEnabled = not playerEspEnabled; 
+    if playerEspEnabled then PE_Toggle.Text="ON"; PE_Toggle.BackgroundColor3=Color3.fromRGB(255,50,50) else PE_Toggle.Text="OFF"; PE_Toggle.BackgroundColor3=Color3.fromRGB(60,60,60) end; 
+    saveSettings(); -- v1.60
+    updateEntityESP() 
+end)
+AM_Toggle.MouseButton1Click:Connect(function() 
+    autoMineEnabled = not autoMineEnabled; 
+    if autoMineEnabled then AM_Toggle.Text="ON"; AM_Toggle.BackgroundColor3=Color3.fromRGB(0,255,255); task.spawn(autoMineLoop) else AM_Toggle.Text="OFF"; AM_Toggle.BackgroundColor3=Color3.fromRGB(60,60,60); currentMiningOre = nil; updateStatus("Idle") end 
+    saveSettings(); -- v1.60
+end)
+-- v1.60: Visuals Toggle (Fixed Cleanup)
 VS_Toggle.MouseButton1Click:Connect(function() 
     visualsEnabled = not visualsEnabled
     if visualsEnabled then 
         VS_Toggle.Text="ON"; VS_Toggle.BackgroundColor3=Color3.fromRGB(255, 150, 0)
-        -- Force Immediate Refresh
         lastPathUpdate = 0 
     else 
-        VS_Toggle.Text="OFF"; VS_Toggle.BackgroundColor3=Color3.fromRGB(60,60,60) 
+        VS_Toggle.Text="OFF"; VS_Toggle.BackgroundColor3=Color3.fromRGB(60,60,60)
+        -- Immediate Deep Clean
+        if lastScanResults then
+            for n, d in pairs(lastScanResults) do 
+                updateHighlights(n, d.Instances, false) 
+            end
+        end
+        pathVisualsFolder:ClearAllChildren()
+        local living = Workspace:FindFirstChild("Living")
+        if living then
+            for _, model in ipairs(living:GetChildren()) do
+                if model:FindFirstChild("PlayerBox") then model.PlayerBox:Destroy() end
+                if model:FindFirstChild("PlayerTag") then model.PlayerTag:Destroy() end
+                if model:FindFirstChild("MobBox") then model.MobBox:Destroy() end
+            end
+        end
     end
-    
-    -- Force update to clear/show
-    if lastScanResults then 
-        for n, d in pairs(lastScanResults) do 
-            if oreToggleStates[n] then updateHighlights(n, d.Instances, true) end
-        end 
-    end
+    saveSettings() -- v1.60
     updateEntityESP()
     updatePaths()
 end)
