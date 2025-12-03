@@ -1,5 +1,9 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.80)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.81)
+    
+    - v1.81 UPDATE (Pathfinding Upgrade):
+        - Added PathfindingModifiers to all Ores: The pathfinder now ignores ores (treats them as walkable), preventing "No Path" errors in crowded caves.
+        - "Mine-Through" Logic: If the bot bumps into an ore while walking a path, it will detect it, mine it, and then continue, rather than blacklisting the target.
     
     - v1.80 FIXES (Visual Control Split):
         - Split "Visuals" into separate "Path Visuals" and "Ore ESP" toggles.
@@ -8,8 +12,6 @@
         - RESTORED v1.56 Ore Visuals (Sphere Radius + Status Bubble) integrated with v1.80 Stability.
     
     - v1.79: Global Highlight Limit Fix (31 limit)
-    - v1.78: Visual Stability Tuning
-    - v1.77: Leniency Updates
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -77,7 +79,7 @@ local oreEspEnabled = true
 local currentMiningOre = nil 
 local currentOreStartTime = 0 
 local currentMaxTime = 60 
-local lastOreHealth = 0   
+local lastOreHealth = 0    
 local currentCombatTarget = nil
 local currentCombatStartTime = 0
 local lastPathUpdate = 0 
@@ -184,7 +186,7 @@ makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
 
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.80 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.81 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -275,10 +277,10 @@ local function getSurfaceDistance(characterRoot, targetOre)
     if raycastResult then return (origin - raycastResult.Position).Magnitude else return direction.Magnitude end
 end
 
--- v1.77 FIX: More lenient wall detection
+-- v1.81 FIX: Return the hit instance so we can identify if it's an ore
 local function isPathBlockedByObstacle(character, targetOre)
     local root = character:FindFirstChild("HumanoidRootPart")
-    if not root then return false end
+    if not root then return false, nil end
     
     local rayParams = RaycastParams.new()
     rayParams.FilterDescendantsInstances = {character, pathVisualsFolder, oreVisualsFolder, targetOre} 
@@ -288,10 +290,11 @@ local function isPathBlockedByObstacle(character, targetOre)
     
     local result = Workspace:Raycast(root.Position, direction, rayParams)
     if result and result.Instance.CanCollide then
-        if result.Position.Y < root.Position.Y - 1.5 then return false end
-        return true 
+        -- Ignore small steps/floor
+        if result.Position.Y < root.Position.Y - 1.5 then return false, nil end
+        return true, result.Instance
     end
-    return false
+    return false, nil
 end
 
 local function hasLineOfSight(startPos, endPos, ignoreList)
@@ -401,6 +404,26 @@ local function isValidOre(ore)
     local status = getOreStatus(ore)
     if status == "RED" then return false end 
     return true
+end
+
+-- v1.81: NEW - Add PathfindingModifier to Ores
+-- This makes the PathfindingService ignore them (treat as transparent) when computing paths
+local function addPathModifier(oreModel)
+    if not oreModel then return end
+    local parts = {}
+    if oreModel:IsA("BasePart") then table.insert(parts, oreModel) end
+    for _, d in ipairs(oreModel:GetDescendants()) do
+        if d:IsA("BasePart") then table.insert(parts, d) end
+    end
+
+    for _, part in ipairs(parts) do
+        if not part:FindFirstChild("OrePathMod") then
+            local mod = Instance.new("PathfindingModifier")
+            mod.Name = "OrePathMod"
+            mod.PassThrough = true -- MAGIC: Tells pathfinder this isn't an obstacle
+            mod.Parent = part
+        end
+    end
 end
 
 -- 4. COMBAT & TOOL
@@ -728,12 +751,44 @@ local function autoMineLoop()
                                     if hum.Health <= 0 then break end
                                     if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then moveSuccess = true; break end
                                     if getNearbyMob() then moveSuccess = true; break end
-                                     
-                                    if isPathBlockedByObstacle(char, targetOre) then
-                                        logDebug("OBSTACLE: Hitting Wall! Switching target...")
-                                        oreBlacklist[targetOre] = tick() + 10 
-                                        currentMiningOre = nil
-                                        pathBlocked = true; moveSuccess = true; break
+                                    
+                                    -- v1.81: NEW OBSTACLE LOGIC
+                                    local isBlocked, hitPart = isPathBlockedByObstacle(char, targetOre)
+                                    if isBlocked then
+                                        local hitOre = nil
+                                        local currentCheck = hitPart
+                                        -- Check if hit part belongs to an ore
+                                        while currentCheck and currentCheck ~= Workspace do
+                                            if currentCheck:GetAttribute("Health") then hitOre = currentCheck; break end
+                                            currentCheck = currentCheck.Parent
+                                        end
+
+                                        if hitOre then
+                                            -- IT IS AN ORE! Mine it.
+                                            logDebug("PATH BLOCKED by " .. hitOre.Name .. ". Mining through...")
+                                            updateStatus("Clearing path: " .. hitOre.Name)
+                                            equipPickaxe()
+                                            faceTarget(getOrePosition(hitOre))
+                                            mineTarget(hitOre)
+                                            
+                                            -- Wait briefly for break
+                                            local mineStart = tick()
+                                            while hitOre.Parent and tick() - mineStart < 1.5 do
+                                                if not autoMineEnabled then break end
+                                                task.wait(0.1)
+                                            end
+                                            
+                                            -- Force path recalculation (break movement loops)
+                                            moveSuccess = true 
+                                            pathBlocked = true 
+                                            break
+                                        else
+                                            -- It is a wall or bedrock. Normal blacklist.
+                                            logDebug("OBSTACLE: Hitting Wall! Switching target...")
+                                            oreBlacklist[targetOre] = tick() + 10 
+                                            currentMiningOre = nil
+                                            pathBlocked = true; moveSuccess = true; break
+                                        end
                                     end
                                     
                                     if (root.Position - lastMovePos).Magnitude < 0.2 and timeElapsed > 1.0 then
@@ -751,7 +806,7 @@ local function autoMineLoop()
                                             end
                                         end
                                     end
-                                     
+                                    
                                     lastMovePos = root.Position
                                     task.wait(0.1); timeElapsed = timeElapsed + 0.1
                                 end
@@ -1183,6 +1238,9 @@ local function scanOres()
             if not skip then
                 local pos = getOrePosition(descendant)
                 if pos then 
+                    -- v1.81: Ensure this ore has a PathModifier
+                    addPathModifier(descendant)
+
                     local n = descendant.Name
                     if not current[n] then 
                         current[n] = {Count = 0, Instances = {}} 
@@ -1446,4 +1504,4 @@ task.spawn(function()
     end 
 end)
 
-logDebug("v1.80 Loaded - Visual Controls Split!")
+logDebug("v1.81 Loaded - Pathfinding Modifiers Added!")
