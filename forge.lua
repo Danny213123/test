@@ -1,11 +1,12 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.62)
-    - v1.62 UPDATE: Fixed Settings Loading (Auto Mine now STARTS if saved as ON).
-    - v1.62 UPDATE: Fixed Ore Selection Persistence (Buttons now sync visually with saved settings).
-    - v1.62 UPDATE: Removed MobBox Check (Attack logic now targets all non-player Living entities).
-    - v1.61 UPDATE: Fixed MobBox Destruction & Priority Reorder.
-    - v1.60 UPDATE: Added Settings System & Fixed Visuals Toggle.
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.69)
+    - v1.69 UPDATE: Added "Opportunistic Mining" (Mines ores found along the path).
+        - While traveling to a target, the bot scans for other enabled ores within 20 studs.
+        - If a close, visible ore is found, it switches targets immediately to mine it.
+    - v1.68 UPDATE: Fixed Priority Reordering & GUI Labels.
+    - v1.67 UPDATE: Relaxed Scanning Checks & Line-of-Sight Fallback.
     - Scans for ores in the "Rocks" folder
+    - ESP Highlights + Radius Visualization
     - FEATURE: Player ESP Toggle & AUTO MINE Toggle & VISUALS Toggle
     - FEATURE: AUTO COMBAT (Switches to Sword if mob nearby)
 ]]
@@ -30,9 +31,11 @@ local PLAYER_DETECTION_RADIUS = 45
 local SURFACE_STOP_DISTANCE = 3.5   
 local COMBAT_RADIUS = 15 
 local HIGHLIGHT_LIMIT = 30 
+local ESP_LIMIT = 150  
+local OPPORTUNITY_RADIUS = 25 -- v1.69: Range to grab ores along the path
 
 -- TIMEOUT SETTINGS
-local ORE_BLACKLIST_DURATION = 300 
+local ORE_BLACKLIST_DURATION = 30 
 local MAX_COMBAT_TIME = 15        
 local COMBAT_BLACKLIST_DURATION = 60 
 local TIMEOUT_PROXIMITY_THRESHOLD = 40 
@@ -46,7 +49,7 @@ local lastScanResults = {}
 local oreBlacklist = {} 
 local mobBlacklist = {} 
 
--- Default States (Will be overwritten by LoadSettings)
+-- Default States
 local playerEspEnabled = false 
 local autoMineEnabled = false 
 local visualsEnabled = true 
@@ -60,6 +63,7 @@ local currentCombatStartTime = 0
 
 local lastPathUpdate = 0 
 local lastRespawnTime = 0 
+local isPathUpdating = false 
 
 -- Idle Monitor State
 local lastIdlePos = Vector3.new(0,0,0)
@@ -150,7 +154,7 @@ MainFrame.Parent = ScreenGui
 makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.62 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.69 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -276,7 +280,7 @@ local function isSafeToWalk(targetPos)
     local horizontalDir = Vector3.new(diff.X, 0, diff.Z).Unit
     local distance = diff.Magnitude
     
-    if distance < 8 then return true end
+    if distance < 35 then return true end
 
     if (origin.Y - targetPos.Y) > 10 and distance > 5 then return false end
     local rayParams = RaycastParams.new()
@@ -385,9 +389,6 @@ local function getNearbyMob()
         if model:IsA("Model") and model ~= char then
             if mobBlacklist[model] and (tick() - mobBlacklist[model] < COMBAT_BLACKLIST_DURATION) then continue end
             if not Players:FindFirstChild(model.Name) then
-                -- v1.62 FIX: Removed MobBox check entirely as requested
-                -- if not model:FindFirstChild("MobBox") then continue end 
-
                 local pivot = model:GetPivot(); local hum = model:FindFirstChild("Humanoid")
                 if pivot and hum and hum.Health > 0 then
                     local dist = (pivot.Position - root.Position).Magnitude
@@ -397,6 +398,34 @@ local function getNearbyMob()
         end
     end
     return closestMob
+end
+
+-- v1.69 UPDATE: OPPORTUNISTIC ORE CHECK
+-- Checks for any enabled ore within OPPORTUNITY_RADIUS (25 studs) that is visible
+local function getNearbyOpportunityOre()
+    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+    
+    for oreName, isEnabled in pairs(oreToggleStates) do
+        if isEnabled and lastScanResults[oreName] then
+            for _, ore in ipairs(lastScanResults[oreName].Instances) do
+                -- Check basic validity and distance
+                if isValidOre(ore) and ore ~= currentMiningOre then
+                    local pos = getOrePosition(ore)
+                    if pos then
+                        local dist = (root.Position - pos).Magnitude
+                        if dist <= OPPORTUNITY_RADIUS then
+                            -- Check Line of Sight
+                            if hasLineOfSight(root.Position, pos, {LocalPlayer.Character, ore}) then
+                                return ore
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil
 end
 
 -- 6. AUTO LOOP
@@ -421,17 +450,29 @@ local function getBestOre()
             if count > 0 then
                 local function selectFromList(list)
                     table.sort(list, function(a, b) return a.Dist < b.Dist end)
-                    local best = nil; local minWps = math.huge; local checkLimit = math.min(10, #list) 
-                    for i = 1, checkLimit do
-                        local entry = list[i]
+                    
+                    if #list > 0 and list[1].Dist < 25 then
+                        logDebug("Point-Blank Match: " .. list[1].Ore.Name)
+                        return list[1].Ore
+                    end
+
+                    local best = nil; local minWps = math.huge; 
+                    for i, entry in ipairs(list) do
+                        local surfDist = getSurfaceDistance(root, entry.Ore)
+                        if surfDist < 35 then
+                             logDebug("Instant Match (Surface < 35): " .. entry.Ore.Name)
+                             return entry.Ore
+                        end
+
+                        if i % 5 == 0 then task.wait() end
+
                         local path = PathfindingService:CreatePath({AgentRadius = 2.5, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20 }})
                         local success = pcall(function() path:ComputeAsync(root.Position, entry.Pos) end)
                         if success and path.Status == Enum.PathStatus.Success then
                             local wps = #path:GetWaypoints(); if wps < minWps then minWps = wps; best = entry.Ore end
                         end
-                        if i % 5 == 0 then task.wait() end
                     end
-                    if not best and #list > 0 then local closest = list[1]; if closest.Dist < 25 and isSafeToWalk(closest.Pos) then best = closest.Ore end end
+                    if not best and #list > 0 then local closest = list[1]; if closest.Dist < 35 or isSafeToWalk(closest.Pos) then best = closest.Ore end end
                     return best
                 end
                 local found = selectFromList(greenCandidates)
@@ -480,7 +521,6 @@ local function autoMineLoop()
                 end
             end
 
-            -- Respawn Timer
             if tick() - lastRespawnTime < 10 then
                 StatusLabel.Text = "Status: Waiting for Cannon (" .. math.ceil(10 - (tick() - lastRespawnTime)) .. "s)"
                 task.wait(0.5)
@@ -566,6 +606,14 @@ local function autoMineLoop()
                                 if tick() - currentOreStartTime > currentMaxTime then break end
                                 if hum.Health <= 0 then break end
                                 if getOreStatus(targetOre) == "RED" then break end
+                                
+                                -- v1.69: Opportunistic Check
+                                local oppOre = getNearbyOpportunityOre()
+                                if oppOre then
+                                    logDebug("OPPORTUNITY: Found " .. oppOre.Name .. " nearby! Switching.")
+                                    setTarget(oppOre)
+                                    break -- Break movement loop to mine new target
+                                end
 
                                 if i % 15 == 0 then 
                                     local potentialNewTarget = getBestOre()
@@ -860,7 +908,8 @@ local function refreshGui()
             targetSeen[name] = true; local fname = "Frame_"..name; local f = TargetList:FindFirstChild(fname)
             if not f then
                 f = Instance.new("Frame"); f.Name = fname; f.Size = UDim2.new(1,-5,0,30); f.BackgroundColor3 = Color3.fromRGB(40,40,40); f.Parent = TargetList; Instance.new("UICorner", f).CornerRadius = UDim.new(0,4)
-                Instance.new("TextLabel", f).Name = "InfoLabel"; f.InfoLabel.Size = UDim2.new(0.65,0,1,0); f.InfoLabel.Position = UDim2.new(0,5,0,0); f.InfoLabel.BackgroundTransparency = 1; f.InfoLabel.TextXAlignment = Enum.TextXAlignment.Left; f.InfoLabel.TextColor3 = Color3.fromRGB(220,220,220); f.InfoLabel.Font = Enum.Font.GothamMedium; f.InfoLabel.TextSize = 12
+                -- v1.68 FIX: Use variables instead of dot syntax
+                local lbl = Instance.new("TextLabel", f); lbl.Name = "InfoLabel"; lbl.Size = UDim2.new(0.65,0,1,0); lbl.Position = UDim2.new(0,5,0,0); lbl.BackgroundTransparency = 1; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.TextColor3 = Color3.fromRGB(220,220,220); lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 12
                 local b = Instance.new("TextButton", f); b.Name = "ToggleBtn"; b.Size = UDim2.new(0.3,0,0.8,0); b.Position = UDim2.new(0.68,0,0.1,0); b.BackgroundColor3 = Color3.fromRGB(60,60,60); b.Text = "OFF"; b.TextColor3 = Color3.fromRGB(255,255,255); b.Font = Enum.Font.GothamBold; b.TextSize = 11; Instance.new("UICorner", b).CornerRadius = UDim.new(0,4)
                 b.MouseButton1Click:Connect(function() 
                     oreToggleStates[name] = not oreToggleStates[name]; 
@@ -894,13 +943,16 @@ local function refreshGui()
         prioritySeen[name] = true; local fname = "PFrame_"..name; local f = PriorityList:FindFirstChild(fname)
         if not f then
             f = Instance.new("Frame"); f.Name = fname; f.Size = UDim2.new(1,-5,0,30); f.BackgroundColor3 = Color3.fromRGB(40,40,40); f.Parent = PriorityList; Instance.new("UICorner", f).CornerRadius = UDim.new(0,4)
-            Instance.new("TextLabel", f).Name = "NameLabel"; f.NameLabel.Size = UDim2.new(0.6,0,1,0); f.NameLabel.Position = UDim2.new(0,5,0,0); f.NameLabel.BackgroundTransparency = 1; f.NameLabel.TextXAlignment = Enum.TextXAlignment.Left; f.NameLabel.TextColor3 = Color3.fromRGB(220,220,220); f.NameLabel.Font = Enum.Font.GothamMedium; f.NameLabel.TextSize = 12
+            -- v1.68 FIX: Use variables
+            local lbl = Instance.new("TextLabel", f); lbl.Name = "NameLabel"; lbl.Size = UDim2.new(0.6,0,1,0); lbl.Position = UDim2.new(0,5,0,0); lbl.BackgroundTransparency = 1; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.TextColor3 = Color3.fromRGB(220,220,220); lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 12
             local bUp = Instance.new("TextButton", f); bUp.Name = "UpBtn"; bUp.Size = UDim2.new(0.15,0,0.8,0); bUp.Position = UDim2.new(0.62,0,0.1,0); bUp.BackgroundColor3 = Color3.fromRGB(60,60,60); bUp.Text = "▲"; bUp.TextColor3 = Color3.fromRGB(255,255,255); bUp.Font = Enum.Font.GothamBold; bUp.TextSize = 10; Instance.new("UICorner", bUp).CornerRadius = UDim.new(0,4)
             bUp.MouseButton1Click:Connect(function() movePriority(name, -1); refreshGui() end)
             local bDown = Instance.new("TextButton", f); bDown.Name = "DownBtn"; bDown.Size = UDim2.new(0.15,0,0.8,0); bDown.Position = UDim2.new(0.8,0,0.1,0); bDown.BackgroundColor3 = Color3.fromRGB(60,60,60); bDown.Text = "▼"; bDown.TextColor3 = Color3.fromRGB(255,255,255); bDown.Font = Enum.Font.GothamBold; bDown.TextSize = 10; Instance.new("UICorner", bDown).CornerRadius = UDim.new(0,4)
             bDown.MouseButton1Click:Connect(function() movePriority(name, 1); refreshGui() end)
         end
-        f.LayoutOrder = i; f.NameLabel.Text = string.format("%d. %s", i, name)
+        f.LayoutOrder = i
+        local lbl = f:FindFirstChild("NameLabel")
+        if lbl then lbl.Text = string.format("%d. %s", i, name) end
     end
     for _, c in ipairs(PriorityList:GetChildren()) do if c:IsA("Frame") and not prioritySeen[c.Name:gsub("PFrame_","")] then c:Destroy() end end
     PriorityList.CanvasSize = UDim2.new(0,0,0,PriorityLayout.AbsoluteContentSize.Y)
