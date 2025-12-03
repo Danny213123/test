@@ -1,12 +1,13 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.43)
-    - v1.43 UPDATE: Restored Pathfinding Reliability (Fixed walking into walls).
-        - Removed "Blind Trust" for close ores.
-        - Added Line-of-Sight (Raycast) check: Only skips pathfinding if the ore is VISIBLE and SAFE.
-        - If an ore is close but behind a wall, the bot now forces a proper path calculation.
-    - v1.42 UPDATE: Optimized Scanning & Fail-Safe.
-    - v1.41 UPDATE: "Not Moving" Fixes.
-    - v1.40 UPDATE: Visual Player Radius Zones.
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.52)
+    - v1.52 UPDATE: Added 10s Respawn Timer.
+        - Pauses logic for 10 seconds after respawning to allow Cannon Bot to launch player.
+    - v1.51 UPDATE: Fixed "Stop Mining if Player Walks In" Bug.
+    - v1.50 UPDATE: "Why am I stuck?" Diagnostics.
+    - v1.49 UPDATE: Fixed "Stuck Scanning" Loop.
+    - v1.48 UPDATE: Fixed "Flickering Path" Bug.
+    - v1.47 UPDATE: Fixed "Standing in front but not mining".
+    - v1.46 UPDATE: Fixed "Yellow instead of Red" Bug.
     - Scans for ores in the "Rocks" folder
     - ESP Highlights + Radius Visualization
     - FEATURE: Player ESP Toggle & AUTO MINE Toggle
@@ -25,8 +26,8 @@ local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
 -- 1. SETTINGS & STATE
-local SCAN_DELAY = 0.2 -- Faster scan tick
-local MINING_RADIUS = 7.5           
+local SCAN_DELAY = 0.2 
+local MINING_RADIUS = 12.0          
 local PLAYER_DETECTION_RADIUS = 25  
 local SURFACE_STOP_DISTANCE = 3.5   
 local COMBAT_RADIUS = 15 
@@ -57,6 +58,7 @@ local currentCombatTarget = nil
 local currentCombatStartTime = 0
 
 local lastPathUpdate = 0 
+local lastRespawnTime = 0 -- v1.52: Track respawn time
 
 -- UI States
 local isTargetDropdownOpen = false 
@@ -112,7 +114,7 @@ MainFrame.Parent = ScreenGui
 makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.43 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.52 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -190,42 +192,31 @@ local function getSurfaceDistance(characterRoot, targetOre)
     if raycastResult then return (origin - raycastResult.Position).Magnitude else return direction.Magnitude end
 end
 
--- v1.38: OBSTACLE DETECTION (Forward Raycast)
 local function isPathBlockedByObstacle(character)
     local root = character:FindFirstChild("HumanoidRootPart")
     if not root then return false end
-    
     local rayParams = RaycastParams.new()
-    rayParams.FilterDescendantsInstances = {character, existingFolder} -- Ignore self and path dots
+    rayParams.FilterDescendantsInstances = {character, existingFolder} 
     rayParams.FilterType = Enum.RaycastFilterType.Exclude
-    
-    -- Cast straight forward 2.5 studs (Movement direction)
-    local direction = root.CFrame.LookVector * 2.5
+    local direction = root.CFrame.LookVector * 1.5
     local result = Workspace:Raycast(root.Position, direction, rayParams)
-    
     if result and result.Instance.CanCollide then
-        -- Ignore if it's the ore we are targeting or part of Rocks folder
         if result.Instance:IsDescendantOf(Workspace:FindFirstChild("Rocks")) then return false end
-        -- Ignore small steps (Traversable) - Check height
         if result.Position.Y < root.Position.Y - 1 then return false end
-        
-        return true -- Genuine blockage
+        return true
     end
     return false
 end
 
--- v1.43: Line of Sight Check (Visual validation)
 local function hasLineOfSight(startPos, endPos, ignoreList)
     local diff = endPos - startPos
     local dir = diff.Unit
     local dist = diff.Magnitude
-    
     local params = RaycastParams.new()
     params.FilterDescendantsInstances = ignoreList or {}
     params.FilterType = Enum.RaycastFilterType.Exclude
-    
     local result = Workspace:Raycast(startPos, dir * dist, params)
-    return result == nil -- Returns true if nothing blocked the way
+    return result == nil 
 end
 
 local function isSafeToWalk(targetPos)
@@ -252,9 +243,12 @@ local function isSafeToWalk(targetPos)
 end
 
 local function isOreFullHealth(ore)
-    local h = ore:GetAttribute("Health")
-    local m = ore:GetAttribute("MaxHealth")
-    return (h and m) and h >= m or true
+    local h = tonumber(ore:GetAttribute("Health"))
+    local m = tonumber(ore:GetAttribute("MaxHealth"))
+    if h and m then
+        return h >= m
+    end
+    return true
 end
 
 local function movePriority(oreName, direction)
@@ -286,23 +280,24 @@ end
 
 -- Returns: "RED" (Blocked), "YELLOW" (Caution), "GREEN" (Free)
 local function getOreStatus(ore)
+    -- v1.51 FIX: If WE are targeting this ore, ignore player proximity (Prevents aborting active mine)
+    if ore == currentMiningOre then return "GREEN" end
+
     local orePos = getOrePosition(ore)
     if not orePos then return "RED" end
     local isFull = isOreFullHealth(ore)
     local playerNearby = false
-    local living = Workspace:FindFirstChild("Living")
-    if living then
-        for _, model in ipairs(living:GetChildren()) do
-            if model and model.Parent and model:IsA("Model") and Players:FindFirstChild(model.Name) and model.Name ~= LocalPlayer.Name then
-                local pivot = model:GetPivot()
-                -- v1.40: Visual and Logical check now consistent
-                if pivot and (pivot.Position - orePos).Magnitude <= PLAYER_DETECTION_RADIUS then playerNearby = true; break end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local targetPart = player.Character.PrimaryPart or player.Character:FindFirstChild("HumanoidRootPart") or player.Character:FindFirstChild("Torso") or player.Character:FindFirstChild("Head")
+            if targetPart then
+                local dist = (targetPart.Position - orePos).Magnitude
+                if dist <= PLAYER_DETECTION_RADIUS then playerNearby = true; break end
             end
         end
     end
     if playerNearby then 
-        if not isFull then return "RED" -- Player Near + Damaged = Blocked
-        else return "YELLOW" end        -- Player Near + Full Health = Caution
+        if not isFull then return "RED" else return "YELLOW" end
     else 
         return "GREEN" 
     end
@@ -354,16 +349,13 @@ local function getNearbyMob()
 end
 
 -- 6. AUTO LOOP
--- v1.42 UPDATE: OPTIMIZED SCANNING (Instant React)
 local function getBestOre()
     local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart"); if not root then return nil end
-    
     logDebug("--- Scanning (Priority Mode) ---")
     
     for _, oreName in ipairs(orePriorityList) do
         if oreToggleStates[oreName] and lastScanResults[oreName] then
             local greenCandidates = {}; local yellowCandidates = {}; local count = 0
-            
             for _, ore in ipairs(lastScanResults[oreName].Instances) do
                 if isValidOre(ore) then
                     local pos = getOrePosition(ore)
@@ -384,42 +376,52 @@ local function getBestOre()
                     local checkLimit = math.min(20, #list) 
                     
                     for i = 1, checkLimit do
-                        if getNearbyMob() then return nil end 
+                        if getNearbyMob() then 
+                            logDebug("Scan Aborted: Enemy Nearby!")
+                            return nil 
+                        end 
                         local entry = list[i]
                         
-                        -- v1.43 FIX: Only instant match if we have Line of Sight (Safe from walls)
                         if entry.Dist < 60 and isSafeToWalk(entry.Pos) and hasLineOfSight(root.Position, entry.Pos, {LocalPlayer.Character, entry.Ore}) then
                             logDebug("Instant Match (LoS): " .. entry.Ore.Name)
                             return entry.Ore
                         end
 
-                        -- v1.42: HEAVY CHECK (Limited to top 3)
-                        if i <= 3 then
-                            StatusLabel.Text = string.format("Pathing: %s (%d/%d)...", entry.Ore.Name, i, 3)
-                            local path = PathfindingService:CreatePath({AgentRadius = 2.0, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20 }})
-                            local success = pcall(function() path:ComputeAsync(root.Position, entry.Pos) end)
-                            if success and path.Status == Enum.PathStatus.Success then
-                                return entry.Ore
-                            end
-                            task.wait() -- Slight yield only for heavy checks
+                        StatusLabel.Text = string.format("Pathing: %s (%d/%d)...", entry.Ore.Name, i, checkLimit)
+                        local path = PathfindingService:CreatePath({AgentRadius = 2.0, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20 }})
+                        local success = pcall(function() path:ComputeAsync(root.Position, entry.Pos) end)
+                        if success and path.Status == Enum.PathStatus.Success then
+                            return entry.Ore
+                        else
+                            -- v1.50: Log failures
+                            -- logDebug("Ore " .. entry.Ore.Name .. " rejected: Path Failed")
                         end
+                        if i % 2 == 0 then task.wait() end 
                     end
                     
-                    -- Fallback: Return closest if logic failed (Main loop will retry/blacklist)
-                    if #list > 0 then return list[1].Ore end
-                    return nil
+                    if not best and #list > 0 then 
+                        local closest = list[1]
+                        -- v1.50: Relaxed close range fallback (ignore LOS if < 20 studs)
+                        local veryClose = closest.Dist < 20
+                        if veryClose or (closest.Dist < 45 and isSafeToWalk(closest.Pos)) then 
+                            best = closest.Ore 
+                            logDebug("Fallback used for " .. best.Name)
+                        else
+                            logDebug("Ore " .. closest.Ore.Name .. " rejected: Unsafe / No LOS")
+                        end 
+                    end
+                    return best
                 end
 
                 local found = selectFromList(greenCandidates, "Green")
                 if found then logDebug("Priority Hit: " .. oreName); return found end
-                
-                -- Only check yellow if no green found
                 found = selectFromList(yellowCandidates, "Yellow")
                 if found then logDebug("Priority Hit (Yellow): " .. oreName); return found end
             end
         end
     end
     logDebug("No reachable ores found.")
+    StatusLabel.Text = "Status: Scan Failed (No Paths)"
     return nil
 end
 
@@ -436,6 +438,13 @@ local function autoMineLoop()
             local hum = char:FindFirstChild("Humanoid")
             local root = char:FindFirstChild("HumanoidRootPart")
             if not hum or not root or hum.Health <= 0 then task.wait(0.5); return end
+
+            -- v1.52: Respawn Timer Check
+            if tick() - lastRespawnTime < 10 then
+                StatusLabel.Text = "Status: Waiting for Cannon (" .. math.ceil(10 - (tick() - lastRespawnTime)) .. "s)"
+                task.wait(0.5)
+                return
+            end
             
             -- COMBAT
             local nearbyMob = getNearbyMob()
@@ -478,7 +487,7 @@ local function autoMineLoop()
             if not currentMiningOre then 
                 updateStatus("Scanning..."); 
                 local best = getBestOre()
-                if best then setTarget(best) end 
+                if best then setTarget(best) else task.wait(1) end 
             end
             
             local targetOre = currentMiningOre
@@ -499,7 +508,7 @@ local function autoMineLoop()
                         faceTarget(targetPos); mineTarget(targetOre); task.wait(0.1)
                     else
                         updateStatus("Moving to " .. targetOre.Name)
-                        local path = PathfindingService:CreatePath({AgentRadius = 2.5, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20 }})
+                        local path = PathfindingService:CreatePath({AgentRadius = 2.0, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20 }})
                         local success = pcall(function() path:ComputeAsync(root.Position, targetPos) end)
                         
                         if success and path.Status == Enum.PathStatus.Success then
@@ -536,6 +545,8 @@ local function autoMineLoop()
                                 hum:MoveTo(wp.Position)
                                 
                                 local timeElapsed = 0; local timeout = 1.0
+                                local lastMovePos = root.Position
+
                                 while not moveSuccess and timeElapsed < timeout do
                                     if not autoMineEnabled then break end
                                     if pathBlocked then break end
@@ -544,16 +555,25 @@ local function autoMineLoop()
                                     if getNearbyMob() then moveSuccess = true; break end 
                                     
                                     if isPathBlockedByObstacle(char) then
-                                        logDebug("OBSTACLE DETECTED! Aborting path.")
+                                        logDebug("OBSTACLE: Hitting Wall! Switching target...")
+                                        oreBlacklist[targetOre] = tick() + 10 
+                                        currentMiningOre = nil
                                         pathBlocked = true; moveSuccess = true; break
                                     end
 
                                     if root.Velocity.Magnitude < 0.1 and timeElapsed > 0.5 then
-                                        hum:ChangeState(Enum.HumanoidStateType.Jumping); hum.Jump = true
-                                        if timeElapsed > 0.8 then 
-                                            logDebug("STUCK: Temporarily skipping " .. targetOre.Name)
-                                            oreBlacklist[targetOre] = tick() + 10 
-                                            currentMiningOre = nil; moveSuccess = true; pathBlocked = true
+                                        if (root.Position - targetPos).Magnitude < 15 then
+                                             logDebug("STUCK but close: Forcing Mine...")
+                                             equipPickaxe(); faceTarget(targetPos); mineTarget(targetOre)
+                                             moveSuccess = true; break
+                                        else
+                                            hum:ChangeState(Enum.HumanoidStateType.Jumping); hum.Jump = true
+                                            if timeElapsed > 0.8 then 
+                                                logDebug("STUCK (Pos): Switching target...")
+                                                oreBlacklist[targetOre] = tick() + 10 
+                                                currentMiningOre = nil
+                                                moveSuccess = true; pathBlocked = true
+                                            end
                                         end
                                     end 
                                     task.wait(0.1); timeElapsed = timeElapsed + 0.1
@@ -562,7 +582,6 @@ local function autoMineLoop()
                             end
                             if blockedConn then blockedConn:Disconnect() end
                         else
-                            -- v1.43: FAIL-SAFE WITH LOS CHECK
                             if isSafeToWalk(targetPos) and hasLineOfSight(root.Position, targetPos, {char, targetOre}) then
                                 if surfaceDist > SURFACE_STOP_DISTANCE then
                                     hum:MoveTo(targetPos)
@@ -574,7 +593,6 @@ local function autoMineLoop()
                                     end
                                 end
                             else
-                                -- BLACKLIST IMMEDIATELY if path failed and not visible
                                 logDebug("Path failed & No LOS: Blacklisting " .. targetOre.Name)
                                 oreBlacklist[targetOre] = tick() + 5; currentMiningOre = nil
                             end
@@ -625,6 +643,9 @@ end
 
 local function onCharacterAdded(char)
     resetState()
+    lastRespawnTime = tick() -- v1.52: Reset respawn timer
+    logDebug("Respawn detected. Waiting 10s for cannon...")
+    
     local hum = char:WaitForChild("Humanoid", 10)
     local root = char:WaitForChild("HumanoidRootPart", 10)
     if hum and root then 
@@ -692,7 +713,7 @@ local function updateHighlights(oreName, instances, isEnabled)
                 if not statusRad then 
                     statusRad = Instance.new("CylinderHandleAdornment", model); statusRad.Name = "OreStatusRadius"; statusRad.Height = 1; statusRad.Transparency = 0.7; statusRad.AlwaysOnTop = true
                     local center = model:IsA("Model") and (model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")) or model
-                    if center then statusRad.Adornee = center; statusRad.CFrame = CFrame.new(0, -3, 0) * CFrame.Angles(math.rad(90), 0, 0) end
+                    if center then statusRad.Adornee = center; statusRad.CFrame = CFrame.new(0, -2, 0) * CFrame.Angles(math.rad(90), 0, 0) end
                 end
                 statusRad.Radius = PLAYER_DETECTION_RADIUS
                 statusRad.Color3 = statusColor
