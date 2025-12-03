@@ -1,11 +1,12 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.32)
-    - v1.32 UPDATE: Simultaneous Dropdowns (Target & Priority can stay open together).
-    - v1.32 UPDATE: Enlarged Debug Console (Taller view for better log reading).
-    - v1.31 UPDATE: "Priority System" - Two Separate Dropdowns.
-    - v1.31 UPDATE: Strict Priority Pathfinding.
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.33)
+    - v1.33 UPDATE: "Hole/Cave" Pathfinding Fixes.
+        - Reduced Agent Radius (3.0 -> 2.0) to fit in smaller holes.
+        - Reduced Air Cost to encourage dropping down ledges/holes.
+        - Added Smart Jump Logic: Prevents jumping if the target is below (Walking off ledge instead).
+    - v1.32 UPDATE: Simultaneous Dropdowns & Larger Console.
+    - v1.31 UPDATE: Priority System.
     - v1.30 UPDATE: Stringent Blacklist Logic.
-    - v1.29 UPDATE: Detailed Debugging.
     - Scans for ores in the "Rocks" folder
     - ESP Highlights + Radius Visualization
     - FEATURE: Player ESP Toggle & AUTO MINE Toggle
@@ -101,7 +102,6 @@ if not ScreenGui.Parent then ScreenGui.Parent = LocalPlayer:WaitForChild("Player
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "ScannerFrame"
--- v1.32: Taller Frame
 MainFrame.Size = UDim2.new(0, 260, 0, 600) 
 MainFrame.Position = UDim2.new(0.8, 0, 0.1, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
@@ -111,7 +111,7 @@ MainFrame.Parent = ScreenGui
 makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.32 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.33 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -143,7 +143,6 @@ TargetBtn.MouseButton1Click:Connect(function()
     if isTargetDropdownOpen then
         TargetList.Size = UDim2.new(1, -10, 0, 120)
         TargetBtn.Text = "Target Selection ▼"
-        -- v1.32: Do NOT close other dropdown
     else
         TargetList.Size = UDim2.new(1, -10, 0, 0)
         TargetBtn.Text = "Target Selection ▶"
@@ -163,7 +162,6 @@ PriorityBtn.MouseButton1Click:Connect(function()
     if isPriorityDropdownOpen then
         PriorityList.Size = UDim2.new(1, -10, 0, 120)
         PriorityBtn.Text = "Priority Reorder ▼"
-        -- v1.32: Do NOT close other dropdown
     else
         PriorityList.Size = UDim2.new(1, -10, 0, 0)
         PriorityBtn.Text = "Priority Reorder ▶"
@@ -173,7 +171,6 @@ end)
 -- FOOTER (Status & Debug)
 local StatusLabel = Instance.new("TextLabel"); StatusLabel.Name = "StatusLabel"; StatusLabel.Size = UDim2.new(1, -10, 0, 20); StatusLabel.Position = UDim2.new(0, 5, 0, 430); StatusLabel.BackgroundTransparency = 0.8; StatusLabel.BackgroundColor3 = Color3.new(0,0,0); StatusLabel.Text = "Status: Idle"; StatusLabel.TextColor3 = Color3.fromRGB(200, 200, 200); StatusLabel.Font = Enum.Font.Gotham; StatusLabel.TextSize = 11; StatusLabel.Parent = MainFrame
 
--- v1.32: Enlarged Debug Console
 local DebugFrame = Instance.new("ScrollingFrame"); DebugFrame.Name = "DebugConsole"; DebugFrame.Size = UDim2.new(1, -10, 0, 130); DebugFrame.Position = UDim2.new(0, 5, 0, 455); DebugFrame.BackgroundTransparency = 0.5; DebugFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10); DebugFrame.ScrollBarThickness = 2; DebugFrame.Parent = MainFrame
 local DebugLayout = Instance.new("UIListLayout"); DebugLayout.Padding = UDim.new(0, 2); DebugLayout.Parent = DebugFrame
 DebugLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function() DebugFrame.CanvasSize = UDim2.new(0, 0, 0, DebugLayout.AbsoluteContentSize.Y); DebugFrame.CanvasPosition = Vector2.new(0, DebugLayout.AbsoluteContentSize.Y) end)
@@ -387,7 +384,13 @@ local function getBestOre()
                     local best = nil; local minWps = math.huge; local checkLimit = math.min(10, #list) -- Check fewer per type for speed
                     for i = 1, checkLimit do
                         local entry = list[i]
-                        local path = PathfindingService:CreatePath({AgentRadius = 3.0, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20, [Enum.Material.Air] = 4 }})
+                        -- v1.33: Tuned Path Parameters for Holes
+                        local path = PathfindingService:CreatePath({
+                            AgentRadius = 2.0, -- Reduced for holes
+                            AgentHeight = 4.0, 
+                            AgentCanJump = true, 
+                            Costs = { Water = 20 } -- Removed Air cost
+                        })
                         local success = pcall(function() path:ComputeAsync(root.Position, entry.Pos) end)
                         if success and path.Status == Enum.PathStatus.Success then
                             local wps = #path:GetWaypoints(); if wps < minWps then minWps = wps; best = entry.Ore end
@@ -515,8 +518,12 @@ local function autoMineLoop()
                     else
                         updateStatus("Moving to " .. targetOre.Name)
                         
+                        -- v1.33: Tuned Path Parameters for Holes
                         local path = PathfindingService:CreatePath({
-                            AgentRadius = 3.0, AgentHeight = 4.0, AgentCanJump = true, Costs = { Water = 20, [Enum.Material.Air] = 4 }
+                            AgentRadius = 2.0, -- Reduced for holes
+                            AgentHeight = 4.0, 
+                            AgentCanJump = true, 
+                            Costs = { Water = 20 } -- Removed Air cost
                         })
                         
                         local success = pcall(function() path:ComputeAsync(root.Position, targetPos) end)
@@ -545,7 +552,13 @@ local function autoMineLoop()
 
                                 updateStatus("Moving to " .. targetOre.Name)
                                 
-                                if wp.Action == Enum.PathWaypointAction.Jump then humanoid:ChangeState(Enum.HumanoidStateType.Jumping); humanoid.Jump = true end
+                                if wp.Action == Enum.PathWaypointAction.Jump then 
+                                    -- v1.33: Smart Jump Logic (Prevent dropping jumps)
+                                    if wp.Position.Y >= root.Position.Y - 3.0 then
+                                        humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                                        humanoid.Jump = true
+                                    end
+                                end
                                 
                                 local moveSuccess = false
                                 local connection = humanoid.MoveToFinished:Connect(function() moveSuccess = true end)
