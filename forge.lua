@@ -1,15 +1,14 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.91)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.92)
     
-    - v1.91 UPDATE (Smooth Continuous Pathing):
-        - Fixed "stopping at every waypoint" by adding a proximity skip. 
-          The bot now moves to the next waypoint immediately when within 2.5 studs of the current one,
-          preventing the character from decelerating to a halt at every step.
-        - Removed v1.90 "Dynamic Pauses" to ensure fluid movement.
-        - Optimized obstacle scanning frequency (0.1s -> 0.3s).
+    - v1.92 UPDATE (Responsive Vacuum):
+        - REMOVED the 0.3s delay on obstacle checking. The bot now checks for ores in range 
+          every single movement tick (~0.1s). This fixes the issue where it would walk past ores.
+        - Adjusted interrupt logic so "Vacuuming" an ore doesn't blacklist your main target.
 
-    - v1.89 UPDATE (Standardized Pathing):
-        - Reverted AgentRadius to 2.0 and AgentHeight to 5.0.
+    - v1.91 UPDATE (Smooth Continuous Pathing):
+        - Proximity skip for smooth walking.
+        - Standardized agent size.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -184,7 +183,7 @@ makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
 
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.91 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.92 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -723,6 +722,8 @@ local function autoMineLoop()
                         if success and path.Status == Enum.PathStatus.Success then
                             local waypoints = path:GetWaypoints()
                             local pathBlocked = false
+                            local vacuumInterrupt = false -- v1.92: New flag for obstacle interrupts
+                            
                             local blockedConn; blockedConn = path.Blocked:Connect(function() 
                                 -- v1.88: Disabled auto-block logic. Just log it.
                                 -- logDebug("Path signal: Blocked (Ignored for lenience)")
@@ -740,6 +741,11 @@ local function autoMineLoop()
                                     currentMiningOre = nil
                                     break 
                                 end
+                                if vacuumInterrupt then -- v1.92: Resume/Recalc after vacuum
+                                    logDebug("Resuming after obstacle clear...")
+                                    break 
+                                end
+                                
                                 if not autoMineEnabled or not currentMiningOre or not currentMiningOre.Parent then break end
                                 if getNearbyMob() then break end
                                 if tick() - currentOreStartTime > currentMaxTime then break end
@@ -785,7 +791,6 @@ local function autoMineLoop()
                                 
                                 local timeElapsed = 0; local timeout = 3.0 -- v1.87: Increased to 3.0s
                                 local lastMovePos = root.Position
-                                local lastObstacleCheck = 0 -- v1.91: For optimization
                                 
                                 while not moveSuccess and timeElapsed < timeout do
                                     if not autoMineEnabled then break end
@@ -806,24 +811,24 @@ local function autoMineLoop()
 
                                     if getNearbyMob() then moveSuccess = true; break end
                                     
-                                    -- v1.91: Optimized Obstacle Logic (Run every 0.3s)
-                                    if timeElapsed - lastObstacleCheck > 0.3 then
-                                        lastObstacleCheck = timeElapsed
-                                        local hitOre, isBlocked = checkObstaclesInFront(char)
-                                        if isBlocked and hitOre then
-                                            logDebug("OBSTACLE: " .. hitOre.Name .. " detected in path. Mining...")
-                                            updateStatus("Clearing obstacle: " .. hitOre.Name)
-                                            equipPickaxe()
-                                            faceTarget(getOrePosition(hitOre))
-                                            mineTarget(hitOre)
-                                            
-                                            local mineStart = tick()
-                                            while hitOre.Parent and tick() - mineStart < 1.5 do
-                                                if not autoMineEnabled then break end
-                                                task.wait(0.1)
-                                            end
-                                            moveSuccess = true; pathBlocked = true; break
+                                    -- v1.92: VACUUM CHECK (Run every tick for responsiveness)
+                                    local hitOre, isBlocked = checkObstaclesInFront(char)
+                                    if isBlocked and hitOre then
+                                        logDebug("OBSTACLE: " .. hitOre.Name .. " detected in path. Mining...")
+                                        updateStatus("Clearing obstacle: " .. hitOre.Name)
+                                        equipPickaxe()
+                                        faceTarget(getOrePosition(hitOre))
+                                        mineTarget(hitOre)
+                                        
+                                        local mineStart = tick()
+                                        while hitOre.Parent and tick() - mineStart < 1.5 do
+                                            if not autoMineEnabled then break end
+                                            task.wait(0.1)
                                         end
+                                        -- v1.92: Interrupt movement but DO NOT blacklist main target
+                                        moveSuccess = true 
+                                        vacuumInterrupt = true
+                                        break
                                     end
                                     
                                     -- STUCK MONITOR (Handles Walls/Stuck)
@@ -1540,4 +1545,4 @@ task.spawn(function()
     end 
 end)
 
-logDebug("v1.91 Loaded - Smooth Continuous Pathing")
+logDebug("v1.92 Loaded - Responsive Vacuum & Interrupts")
