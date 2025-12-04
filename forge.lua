@@ -1,15 +1,16 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.84)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.85)
     
+    - v1.85 UPDATE (Iterative Vacuum):
+        - Changed `checkObstaclesInFront` to iterate directly through detected ores.
+        - Now strictly checks "on each ore" to see if the player intersects its `MINING_RADIUS`.
+        - Ensures only ENABLED ores are "vacuumed" while walking.
+        
     - v1.84 UPDATE (Opportunity/Obstacle Vacuum):
-        - Modified `checkObstaclesInFront` to scan the entire `MINING_RADIUS` around the player.
-        - Now, if the bot intersects the mining range of ANY valid ore while moving to a target,
-          it will stop and mine that ore immediately (as requested).
-        - This effectively makes the bot "vacuum" ores along its path.
+        - Added vacuum behavior.
 
     - v1.83 FIX (Wall Obstacle Logic):
         - Fixed "Constant switching target" bug.
-        - Wall collisions are handled by stuck-monitor only.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -184,7 +185,7 @@ makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
 
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.84 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.85 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -278,57 +279,39 @@ end
 -- v1.82 IMPROVED: Spatial Query instead of single Raycast
 -- v1.83 FIX: Only returns true for isBlocked if it is an ORE. Walls are ignored here.
 -- v1.84 UPDATE: Scans entire MINING_RADIUS around player to vacuum ores along path.
+-- v1.85 UPDATE: Explicitly checks "on each ore" from the known list (Vacuum Mode).
 local function checkObstaclesInFront(character)
     local root = character:FindFirstChild("HumanoidRootPart")
     if not root then return nil, false end
     
-    -- v1.84: SCANNING MINING RADIUS (Vacuum Mode)
-    -- We scan the full mining radius. If ANY valid ore is inside, we treat it as an "obstacle" 
-    -- and stop to mine it (opportunity mining).
-    
-    local overlapParams = OverlapParams.new()
-    overlapParams.FilterDescendantsInstances = {character, pathVisualsFolder, oreVisualsFolder}
-    overlapParams.FilterType = Enum.RaycastFilterType.Exclude
-    
-    -- Get all parts in MINING_RADIUS
-    local parts = Workspace:GetPartBoundsInRadius(root.Position, MINING_RADIUS, overlapParams)
-    
     local closestOre = nil
-    local closestDist = math.huge
-    
-    for _, part in ipairs(parts) do
-        if part.CanCollide or part:GetAttribute("Health") then
-            local currentCheck = part
-            local foundOreModel = nil
-            
-            -- Traverse up to find model
-            while currentCheck and currentCheck ~= Workspace do
-                if currentCheck:GetAttribute("Health") then
-                    foundOreModel = currentCheck
-                    break
-                end
-                currentCheck = currentCheck.Parent
-            end
-            
-            if foundOreModel then
-                -- VALIDATION: Must be valid ore and NOT the one we are currently traveling to.
-                if foundOreModel ~= currentMiningOre and isValidOre(foundOreModel) then
-                    local dist = (root.Position - getOrePosition(foundOreModel)).Magnitude
-                    if dist < closestDist then
-                        closestDist = dist
-                        closestOre = foundOreModel
+    local closestDist = MINING_RADIUS -- Strict limit to Mining Radius
+
+    -- Iterate through all known ores to see if we are currently intersecting any of them
+    for oreName, isEnabled in pairs(oreToggleStates) do
+        if isEnabled and lastScanResults[oreName] then
+            for _, ore in ipairs(lastScanResults[oreName].Instances) do
+                if ore ~= currentMiningOre and isValidOre(ore) then
+                    local pos = getOrePosition(ore)
+                    if pos then
+                        local dist = (root.Position - pos).Magnitude
+                        -- Check if we are physically inside the mining range of this specific ore
+                        if dist <= MINING_RADIUS then
+                            if dist < closestDist then
+                                closestDist = dist
+                                closestOre = ore
+                            end
+                        end
                     end
                 end
             end
-            -- Note: We intentionally ignore non-ore parts (walls) here, 
-            -- letting the Stuck Monitor handle physical blocks.
         end
     end
     
     if closestOre then
-        return closestOre, true -- Found an ore in range! Mine it.
+        return closestOre, true -- Found an ore we are intersecting! Mine it.
     end
-    
+
     return nil, false -- No ore obstacles
 end
 
@@ -797,7 +780,7 @@ local function autoMineLoop()
                                     if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then moveSuccess = true; break end
                                     if getNearbyMob() then moveSuccess = true; break end
                                     
-                                    -- v1.84: UPDATED OBSTACLE LOGIC
+                                    -- v1.85: UPDATED OBSTACLE LOGIC
                                     -- Checks full mining radius. If it returns an ore, we MUST mine it.
                                     local hitOre, isBlocked = checkObstaclesInFront(char)
                                     
@@ -1538,4 +1521,4 @@ task.spawn(function()
     end 
 end)
 
-logDebug("v1.84 Loaded - Vacuum Mode Active")
+logDebug("v1.85 Loaded - Iterative Vacuum Mode Active")
