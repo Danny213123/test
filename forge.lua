@@ -1,11 +1,16 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.82)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.83)
     
-    - v1.82 UPDATE (Improved Obstacle Mining):
+    - v1.83 UPDATE (Fixed Obstacle Mining):
+        - FIXED: Obstacle detection now checks in MOVEMENT direction, not just look direction
+        - ADDED: Multi-point detection along the path (1.5, 3.0, 4.5 studs ahead)
+        - ADDED: Increased detection radius from 2.5 to 3.0 studs
+        - ADDED: Continuous mining loop for obstacle ores (mines until destroyed)
+        - FIXED: Parts without CanCollide but with Health attribute are now detected as ores
+    
+    - v1.82 (Improved Obstacle Mining):
         - REPLACED single raycast obstacle detection with `GetPartBoundsInRadius`.
-        - The bot now projects a 2.5-stud "Sensor Sphere" in front of the character while moving.
-        - This fixes issues where the bot would walk into irregular ores (like Basalt) and get stuck because the single ray missed the shape.
-    
+        
     - v1.81 (Pathfinding Upgrade):
         - Added PathfindingModifiers.
         
@@ -56,6 +61,11 @@ local MAX_PATHS = 50
 local PATH_UPDATE_INTERVAL = 1.0  
 local ESP_UPDATE_INTERVAL = 0.1       
 local HIGHLIGHT_UPDATE_INTERVAL = 0.2 
+
+-- v1.83: Obstacle Detection Settings
+local OBSTACLE_CHECK_DISTANCES = {1.5, 3.0, 4.5}  -- Multiple check points
+local OBSTACLE_CHECK_RADIUS = 3.0                  -- Larger detection sphere
+local OBSTACLE_MINE_TIMEOUT = 8.0                  -- Max time to mine an obstacle ore
 
 local lastPathUpdateTime = 0
 local lastESPUpdateTime = 0
@@ -185,7 +195,7 @@ makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
 
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.82 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.83 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -276,42 +286,53 @@ local function getSurfaceDistance(characterRoot, targetOre)
     if raycastResult then return (origin - raycastResult.Position).Magnitude else return direction.Magnitude end
 end
 
--- v1.82 IMPROVED: Spatial Query instead of single Raycast
--- Checks a 2.5 stud radius in front of the player for ANY blocking ores
-local function checkObstaclesInFront(character)
+-- v1.83 FIXED: Obstacle detection now checks in MOVEMENT direction
+-- Also checks multiple points along the path for better coverage
+local function checkObstaclesInFront(character, targetPosition)
     local root = character:FindFirstChild("HumanoidRootPart")
     if not root then return nil, false end
     
-    -- Calculate a point 2.0 studs directly in front of the player
-    local detectionPoint = root.CFrame.Position + (root.CFrame.LookVector * 2.0)
-    
-    -- Define the check radius (sphere size)
-    local checkRadius = 2.5
+    -- v1.83: Calculate direction based on target position (movement direction)
+    -- Falls back to LookVector if no target provided
+    local direction
+    if targetPosition then
+        local diff = targetPosition - root.Position
+        if diff.Magnitude > 0.1 then
+            direction = diff.Unit
+        else
+            direction = root.CFrame.LookVector
+        end
+    else
+        direction = root.CFrame.LookVector
+    end
     
     local overlapParams = OverlapParams.new()
     overlapParams.FilterDescendantsInstances = {character, pathVisualsFolder, oreVisualsFolder}
     overlapParams.FilterType = Enum.RaycastFilterType.Exclude
     
-    -- Get all parts in that sphere
-    local parts = Workspace:GetPartBoundsInRadius(detectionPoint, checkRadius, overlapParams)
-    
     local foundWall = false
     
-    for _, part in ipairs(parts) do
-        if part.CanCollide then
-            -- Check if this part belongs to an Ore (has Health attribute)
+    -- v1.83: Check multiple points along the movement path
+    for _, checkDist in ipairs(OBSTACLE_CHECK_DISTANCES) do
+        local detectionPoint = root.Position + (direction * checkDist)
+        
+        -- Get all parts in that sphere
+        local parts = Workspace:GetPartBoundsInRadius(detectionPoint, OBSTACLE_CHECK_RADIUS, overlapParams)
+        
+        for _, part in ipairs(parts) do
+            -- v1.83: Check for Health attribute FIRST (some ore parts may not have CanCollide)
+            -- Then check CanCollide for walls
             local currentCheck = part
-            local isOre = false
             while currentCheck and currentCheck ~= Workspace do
                 if currentCheck:GetAttribute("Health") then
-                    return currentCheck, true -- Found an ORE! Priority return.
+                    -- Found an ORE! Priority return.
+                    return currentCheck, true
                 end
                 currentCheck = currentCheck.Parent
             end
             
-            -- If we are here, we hit a collidable part that is NOT an ore
-            -- Only mark as wall if it's not the Terrain floor (optional, but safer)
-            if part.Name ~= "Terrain" then
+            -- If we're here, it's not an ore - check if it's a blocking wall
+            if part.CanCollide and part.Name ~= "Terrain" and not part:IsA("TrussPart") then
                 foundWall = true
             end
         end
@@ -322,6 +343,37 @@ local function checkObstaclesInFront(character)
     end
     
     return nil, false -- Path is clear
+end
+
+-- v1.83: Additional raycast check for ores directly between player and target
+local function checkOreInPath(character, targetPosition)
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root or not targetPosition then return nil end
+    
+    local origin = root.Position
+    local direction = targetPosition - origin
+    local distance = direction.Magnitude
+    
+    if distance < 1 then return nil end
+    
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {character, pathVisualsFolder, oreVisualsFolder}
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    
+    local result = Workspace:Raycast(origin, direction, rayParams)
+    
+    if result and result.Instance then
+        -- Check if the hit part belongs to an ore
+        local currentCheck = result.Instance
+        while currentCheck and currentCheck ~= Workspace do
+            if currentCheck:GetAttribute("Health") then
+                return currentCheck
+            end
+            currentCheck = currentCheck.Parent
+        end
+    end
+    
+    return nil
 end
 
 local function hasLineOfSight(startPos, endPos, ignoreList)
@@ -624,6 +676,61 @@ end
 
 local function updateStatus(text) StatusLabel.Text = "Status: " .. text end
 
+-- v1.83: New function to mine through obstacle ores
+local function mineObstacleOre(char, hum, obstacleOre)
+    local orePos = getOrePosition(obstacleOre)
+    if not orePos then return false end
+    
+    logDebug("OBSTACLE: " .. obstacleOre.Name .. " blocking path. Mining through...")
+    updateStatus("Clearing: " .. obstacleOre.Name)
+    
+    -- Equip pickaxe
+    if not char:FindFirstChild("Pickaxe") then
+        equipPickaxe()
+        task.wait(0.1)
+    end
+    
+    local mineStart = tick()
+    local lastHealth = obstacleOre:GetAttribute("Health") or 999999
+    
+    -- Mine until ore is destroyed or timeout
+    while obstacleOre and obstacleOre.Parent and (tick() - mineStart) < OBSTACLE_MINE_TIMEOUT do
+        if not autoMineEnabled then return false end
+        if hum.Health <= 0 then return false end
+        
+        -- Check for mobs (interrupt mining if attacked)
+        if getNearbyMob() then
+            logDebug("Combat interrupted obstacle mining")
+            return false
+        end
+        
+        -- Face and mine
+        local currentOrePos = getOrePosition(obstacleOre)
+        if currentOrePos then
+            faceTarget(currentOrePos)
+        end
+        mineTarget(obstacleOre)
+        
+        -- Check if health is decreasing (we're actually mining)
+        local currentHealth = obstacleOre:GetAttribute("Health") or 0
+        if currentHealth < lastHealth then
+            lastHealth = currentHealth
+            mineStart = tick() -- Reset timeout since we're making progress
+        end
+        
+        task.wait(0.15) -- Mine rate
+    end
+    
+    -- Check if ore was destroyed
+    if not obstacleOre or not obstacleOre.Parent then
+        logDebug("Obstacle " .. (obstacleOre and obstacleOre.Name or "ore") .. " cleared!")
+        return true
+    else
+        logDebug("Obstacle mining timed out")
+        return false
+    end
+end
+
 local function autoMineLoop()
     logDebug("Auto System Started")
     lastIdleTime = tick()
@@ -789,25 +896,31 @@ local function autoMineLoop()
                                     if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then moveSuccess = true; break end
                                     if getNearbyMob() then moveSuccess = true; break end
                                     
-                                    -- v1.82: UPDATED OBSTACLE LOGIC (RADIUS DETECTION)
-                                    local hitOre, isBlocked = checkObstaclesInFront(char)
+                                    -- v1.83: FIXED OBSTACLE LOGIC - Check in movement direction
+                                    local hitOre, isBlocked = checkObstaclesInFront(char, wp.Position)
+                                    
+                                    -- Also do a direct raycast to the waypoint for better coverage
+                                    if not hitOre then
+                                        hitOre = checkOreInPath(char, wp.Position)
+                                        if hitOre then isBlocked = true end
+                                    end
+                                    
                                     if isBlocked then
                                         if hitOre then
-                                            -- IT IS AN ORE! Mine it.
-                                            logDebug("OBSTACLE: " .. hitOre.Name .. " detected in path. Mining...")
-                                            updateStatus("Clearing obstacle: " .. hitOre.Name)
-                                            equipPickaxe()
-                                            faceTarget(getOrePosition(hitOre))
-                                            mineTarget(hitOre)
+                                            -- v1.83: IMPROVED - Properly mine through obstacle ores
+                                            hum:MoveTo(root.Position) -- Stop moving
                                             
-                                            -- Wait briefly for break
-                                            local mineStart = tick()
-                                            while hitOre.Parent and tick() - mineStart < 1.5 do
-                                                if not autoMineEnabled then break end
-                                                task.wait(0.1)
+                                            local mined = mineObstacleOre(char, hum, hitOre)
+                                            
+                                            if mined then
+                                                -- Ore cleared! Continue path (will recalculate on next iteration)
+                                                logDebug("Path cleared, continuing...")
+                                            else
+                                                -- Failed to mine, maybe blacklist and find new path
+                                                logDebug("Failed to clear obstacle, recalculating path...")
                                             end
                                             
-                                            -- Force path recalculation (break movement loops)
+                                            -- Force path recalculation
                                             moveSuccess = true 
                                             pathBlocked = true 
                                             break
@@ -821,6 +934,17 @@ local function autoMineLoop()
                                     end
                                     
                                     if (root.Position - lastMovePos).Magnitude < 0.2 and timeElapsed > 1.0 then
+                                        -- v1.83: When stuck, check if there's an ore in front we should mine
+                                        local stuckOre, stuckBlocked = checkObstaclesInFront(char, wp.Position)
+                                        if stuckOre then
+                                            logDebug("STUCK on ore: " .. stuckOre.Name .. " - Mining through...")
+                                            hum:MoveTo(root.Position)
+                                            mineObstacleOre(char, hum, stuckOre)
+                                            moveSuccess = true
+                                            pathBlocked = true
+                                            break
+                                        end
+                                        
                                         if (root.Position - targetPos).Magnitude < 15 then 
                                             logDebug("STUCK but close: Forcing Mine...")
                                             equipPickaxe(); faceTarget(targetPos); mineTarget(targetOre) 
@@ -1533,4 +1657,4 @@ task.spawn(function()
     end 
 end)
 
-logDebug("v1.82 Loaded - Radius Obstacle Detection Active!")
+logDebug("v1.83 Loaded - Fixed Obstacle Mining!")
