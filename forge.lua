@@ -323,7 +323,17 @@ local function hasLineOfSight(startPos, endPos, ignoreList)
     params.FilterDescendantsInstances = ignoreList or {}
     params.FilterType = Enum.RaycastFilterType.Exclude
     local result = Workspace:Raycast(startPos, dir * dist, params)
-    return result == nil 
+    
+    if result then
+        -- Check if the obstacle is an Ore (ignore ores in wall check)
+        local hit = result.Instance
+        while hit and hit ~= Workspace do
+            if hit:GetAttribute("Health") then return true end
+            hit = hit.Parent
+        end
+        return false
+    end
+    return true 
 end
 
 local function isSafeToWalk(targetPos)
