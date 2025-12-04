@@ -1,16 +1,15 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.82)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.84)
     
-    - v1.82 UPDATE (Improved Obstacle Mining):
-        - REPLACED single raycast obstacle detection with `GetPartBoundsInRadius`.
-        - The bot now projects a 2.5-stud "Sensor Sphere" in front of the character while moving.
-        - This fixes issues where the bot would walk into irregular ores (like Basalt) and get stuck because the single ray missed the shape.
-    
-    - v1.81 (Pathfinding Upgrade):
-        - Added PathfindingModifiers.
-        
-    - v1.80 FIXES (Visual Control Split):
-        - Split Visuals into Path/Ore ESP.
+    - v1.84 UPDATE (Opportunity/Obstacle Vacuum):
+        - Modified `checkObstaclesInFront` to scan the entire `MINING_RADIUS` around the player.
+        - Now, if the bot intersects the mining range of ANY valid ore while moving to a target,
+          it will stop and mine that ore immediately (as requested).
+        - This effectively makes the bot "vacuum" ores along its path.
+
+    - v1.83 FIX (Wall Obstacle Logic):
+        - Fixed "Constant switching target" bug.
+        - Wall collisions are handled by stuck-monitor only.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -28,7 +27,7 @@ local SETTINGS_FILE = "orescanner_settings.json"
 
 -- 1. SETTINGS & STATE
 local SCAN_DELAY = 0.2 
-local MINING_RADIUS = 12.0           
+local MINING_RADIUS = 12.0            
 local PLAYER_DETECTION_RADIUS = 45  
 local SURFACE_STOP_DISTANCE = 3.5    
 local COMBAT_RADIUS = 15 
@@ -38,7 +37,7 @@ local OPPORTUNITY_RADIUS = 25
 
 -- TIMEOUT SETTINGS
 local ORE_BLACKLIST_DURATION = 30 
-local MAX_COMBAT_TIME = 15         
+local MAX_COMBAT_TIME = 15          
 local COMBAT_BLACKLIST_DURATION = 60 
 local TIMEOUT_PROXIMITY_THRESHOLD = 40 
 
@@ -185,7 +184,7 @@ makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
 
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.82 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.84 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -277,51 +276,60 @@ local function getSurfaceDistance(characterRoot, targetOre)
 end
 
 -- v1.82 IMPROVED: Spatial Query instead of single Raycast
--- Checks a 2.5 stud radius in front of the player for ANY blocking ores
+-- v1.83 FIX: Only returns true for isBlocked if it is an ORE. Walls are ignored here.
+-- v1.84 UPDATE: Scans entire MINING_RADIUS around player to vacuum ores along path.
 local function checkObstaclesInFront(character)
     local root = character:FindFirstChild("HumanoidRootPart")
     if not root then return nil, false end
     
-    -- Calculate a point 2.0 studs directly in front of the player
-    local detectionPoint = root.CFrame.Position + (root.CFrame.LookVector * 2.0)
-    
-    -- Define the check radius (sphere size)
-    local checkRadius = 2.5
+    -- v1.84: SCANNING MINING RADIUS (Vacuum Mode)
+    -- We scan the full mining radius. If ANY valid ore is inside, we treat it as an "obstacle" 
+    -- and stop to mine it (opportunity mining).
     
     local overlapParams = OverlapParams.new()
     overlapParams.FilterDescendantsInstances = {character, pathVisualsFolder, oreVisualsFolder}
     overlapParams.FilterType = Enum.RaycastFilterType.Exclude
     
-    -- Get all parts in that sphere
-    local parts = Workspace:GetPartBoundsInRadius(detectionPoint, checkRadius, overlapParams)
+    -- Get all parts in MINING_RADIUS
+    local parts = Workspace:GetPartBoundsInRadius(root.Position, MINING_RADIUS, overlapParams)
     
-    local foundWall = false
+    local closestOre = nil
+    local closestDist = math.huge
     
     for _, part in ipairs(parts) do
-        if part.CanCollide then
-            -- Check if this part belongs to an Ore (has Health attribute)
+        if part.CanCollide or part:GetAttribute("Health") then
             local currentCheck = part
-            local isOre = false
+            local foundOreModel = nil
+            
+            -- Traverse up to find model
             while currentCheck and currentCheck ~= Workspace do
                 if currentCheck:GetAttribute("Health") then
-                    return currentCheck, true -- Found an ORE! Priority return.
+                    foundOreModel = currentCheck
+                    break
                 end
                 currentCheck = currentCheck.Parent
             end
             
-            -- If we are here, we hit a collidable part that is NOT an ore
-            -- Only mark as wall if it's not the Terrain floor (optional, but safer)
-            if part.Name ~= "Terrain" then
-                foundWall = true
+            if foundOreModel then
+                -- VALIDATION: Must be valid ore and NOT the one we are currently traveling to.
+                if foundOreModel ~= currentMiningOre and isValidOre(foundOreModel) then
+                    local dist = (root.Position - getOrePosition(foundOreModel)).Magnitude
+                    if dist < closestDist then
+                        closestDist = dist
+                        closestOre = foundOreModel
+                    end
+                end
             end
+            -- Note: We intentionally ignore non-ore parts (walls) here, 
+            -- letting the Stuck Monitor handle physical blocks.
         end
     end
     
-    if foundWall then
-        return nil, true -- No ores found, but something is blocking us
+    if closestOre then
+        return closestOre, true -- Found an ore in range! Mine it.
     end
     
-    return nil, false -- Path is clear
+    return nil, false -- No ore obstacles
 end
 
 local function hasLineOfSight(startPos, endPos, ignoreList)
@@ -789,8 +797,10 @@ local function autoMineLoop()
                                     if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then moveSuccess = true; break end
                                     if getNearbyMob() then moveSuccess = true; break end
                                     
-                                    -- v1.82: UPDATED OBSTACLE LOGIC (RADIUS DETECTION)
+                                    -- v1.84: UPDATED OBSTACLE LOGIC
+                                    -- Checks full mining radius. If it returns an ore, we MUST mine it.
                                     local hitOre, isBlocked = checkObstaclesInFront(char)
+                                    
                                     if isBlocked then
                                         if hitOre then
                                             -- IT IS AN ORE! Mine it.
@@ -811,15 +821,10 @@ local function autoMineLoop()
                                             moveSuccess = true 
                                             pathBlocked = true 
                                             break
-                                        else
-                                            -- It is a wall or bedrock. Normal blacklist.
-                                            logDebug("OBSTACLE: Hitting Wall! Switching target...")
-                                            oreBlacklist[targetOre] = tick() + 10 
-                                            currentMiningOre = nil
-                                            pathBlocked = true; moveSuccess = true; break
                                         end
                                     end
                                     
+                                    -- STUCK MONITOR (Handles Walls/Stuck)
                                     if (root.Position - lastMovePos).Magnitude < 0.2 and timeElapsed > 1.0 then
                                         if (root.Position - targetPos).Magnitude < 15 then 
                                             logDebug("STUCK but close: Forcing Mine...")
@@ -1533,4 +1538,4 @@ task.spawn(function()
     end 
 end)
 
-logDebug("v1.82 Loaded - Radius Obstacle Detection Active!")
+logDebug("v1.84 Loaded - Vacuum Mode Active")
