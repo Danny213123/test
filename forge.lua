@@ -1,17 +1,16 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.81)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.82)
     
-    - v1.81 UPDATE (Pathfinding Upgrade):
-        - Added PathfindingModifiers to all Ores: The pathfinder now ignores ores (treats them as walkable), preventing "No Path" errors in crowded caves.
-        - "Mine-Through" Logic: If the bot bumps into an ore while walking a path, it will detect it, mine it, and then continue, rather than blacklisting the target.
+    - v1.82 UPDATE (Improved Obstacle Mining):
+        - REPLACED single raycast obstacle detection with `GetPartBoundsInRadius`.
+        - The bot now projects a 2.5-stud "Sensor Sphere" in front of the character while moving.
+        - This fixes issues where the bot would walk into irregular ores (like Basalt) and get stuck because the single ray missed the shape.
     
+    - v1.81 (Pathfinding Upgrade):
+        - Added PathfindingModifiers.
+        
     - v1.80 FIXES (Visual Control Split):
-        - Split "Visuals" into separate "Path Visuals" and "Ore ESP" toggles.
-        - Moved Mob ESP logic completely out of visual settings; it now runs strictly with Auto Mine.
-        - Adjusted GUI layout to accommodate new buttons.
-        - RESTORED v1.56 Ore Visuals (Sphere Radius + Status Bubble) integrated with v1.80 Stability.
-    
-    - v1.79: Global Highlight Limit Fix (31 limit)
+        - Split Visuals into Path/Ore ESP.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -29,9 +28,9 @@ local SETTINGS_FILE = "orescanner_settings.json"
 
 -- 1. SETTINGS & STATE
 local SCAN_DELAY = 0.2 
-local MINING_RADIUS = 12.0          
+local MINING_RADIUS = 12.0           
 local PLAYER_DETECTION_RADIUS = 45  
-local SURFACE_STOP_DISTANCE = 3.5   
+local SURFACE_STOP_DISTANCE = 3.5    
 local COMBAT_RADIUS = 15 
 local HIGHLIGHT_LIMIT = 30 
 local ESP_LIMIT = 150  
@@ -39,7 +38,7 @@ local OPPORTUNITY_RADIUS = 25
 
 -- TIMEOUT SETTINGS
 local ORE_BLACKLIST_DURATION = 30 
-local MAX_COMBAT_TIME = 15        
+local MAX_COMBAT_TIME = 15         
 local COMBAT_BLACKLIST_DURATION = 60 
 local TIMEOUT_PROXIMITY_THRESHOLD = 40 
 
@@ -79,7 +78,7 @@ local oreEspEnabled = true
 local currentMiningOre = nil 
 local currentOreStartTime = 0 
 local currentMaxTime = 60 
-local lastOreHealth = 0    
+local lastOreHealth = 0     
 local currentCombatTarget = nil
 local currentCombatStartTime = 0
 local lastPathUpdate = 0 
@@ -186,7 +185,7 @@ makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
 
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.81 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.82 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -277,24 +276,43 @@ local function getSurfaceDistance(characterRoot, targetOre)
     if raycastResult then return (origin - raycastResult.Position).Magnitude else return direction.Magnitude end
 end
 
--- v1.81 FIX: Return the hit instance so we can identify if it's an ore
-local function isPathBlockedByObstacle(character, targetOre)
+-- v1.82 IMPROVED: Spatial Query instead of single Raycast
+-- Checks a 2.5 stud radius in front of the player for ANY blocking ores
+local function checkObstaclesInFront(character)
     local root = character:FindFirstChild("HumanoidRootPart")
-    if not root then return false, nil end
+    if not root then return nil, false end
     
-    local rayParams = RaycastParams.new()
-    rayParams.FilterDescendantsInstances = {character, pathVisualsFolder, oreVisualsFolder, targetOre} 
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    -- Calculate a point 2.0 studs directly in front of the player
+    local detectionPoint = root.CFrame.Position + (root.CFrame.LookVector * 2.0)
     
-    local direction = root.CFrame.LookVector * 2.5 
+    -- Define the check radius (sphere size)
+    local checkRadius = 2.5
     
-    local result = Workspace:Raycast(root.Position, direction, rayParams)
-    if result and result.Instance.CanCollide then
-        -- Ignore small steps/floor
-        if result.Position.Y < root.Position.Y - 1.5 then return false, nil end
-        return true, result.Instance
+    local overlapParams = OverlapParams.new()
+    overlapParams.FilterDescendantsInstances = {character, pathVisualsFolder, oreVisualsFolder}
+    overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+    
+    -- Get all parts in that sphere
+    local parts = Workspace:GetPartBoundsInRadius(detectionPoint, checkRadius, overlapParams)
+    
+    for _, part in ipairs(parts) do
+        if part.CanCollide then
+            -- Check if this part belongs to an Ore (has Health attribute)
+            local currentCheck = part
+            while currentCheck and currentCheck ~= Workspace do
+                if currentCheck:GetAttribute("Health") then
+                    return currentCheck, true -- Found an ORE
+                end
+                currentCheck = currentCheck.Parent
+            end
+            
+            -- If we are here, we hit a collidable part that is NOT an ore (like a wall)
+            -- We just return true for "blocked" but nil for the ore
+            return nil, true 
+        end
     end
-    return false, nil
+    
+    return nil, false -- Path is clear
 end
 
 local function hasLineOfSight(startPos, endPos, ignoreList)
@@ -752,21 +770,13 @@ local function autoMineLoop()
                                     if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then moveSuccess = true; break end
                                     if getNearbyMob() then moveSuccess = true; break end
                                     
-                                    -- v1.81: NEW OBSTACLE LOGIC
-                                    local isBlocked, hitPart = isPathBlockedByObstacle(char, targetOre)
+                                    -- v1.82: UPDATED OBSTACLE LOGIC (RADIUS DETECTION)
+                                    local hitOre, isBlocked = checkObstaclesInFront(char)
                                     if isBlocked then
-                                        local hitOre = nil
-                                        local currentCheck = hitPart
-                                        -- Check if hit part belongs to an ore
-                                        while currentCheck and currentCheck ~= Workspace do
-                                            if currentCheck:GetAttribute("Health") then hitOre = currentCheck; break end
-                                            currentCheck = currentCheck.Parent
-                                        end
-
                                         if hitOre then
                                             -- IT IS AN ORE! Mine it.
-                                            logDebug("PATH BLOCKED by " .. hitOre.Name .. ". Mining through...")
-                                            updateStatus("Clearing path: " .. hitOre.Name)
+                                            logDebug("OBSTACLE: " .. hitOre.Name .. " detected in path. Mining...")
+                                            updateStatus("Clearing obstacle: " .. hitOre.Name)
                                             equipPickaxe()
                                             faceTarget(getOrePosition(hitOre))
                                             mineTarget(hitOre)
@@ -1504,4 +1514,4 @@ task.spawn(function()
     end 
 end)
 
-logDebug("v1.81 Loaded - Pathfinding Modifiers Added!")
+logDebug("v1.82 Loaded - Radius Obstacle Detection Active!")
