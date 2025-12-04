@@ -1,20 +1,15 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.90)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.91)
     
-    - v1.90 UPDATE (Dynamic Stabilization):
-        - Implemented "Dynamic Micro-Pauses" during pathfinding.
-        - Instead of stopping rigidly every X steps, the bot now calculates random intervals
-          (every 4-7 waypoints) to briefly pause (0.1s-0.2s).
-        - This prevents "robotic" continuous movement and stabilizes the character on uneven terrain
-          without feeling repetitive.
+    - v1.91 UPDATE (Smooth Continuous Pathing):
+        - Fixed "stopping at every waypoint" by adding a proximity skip. 
+          The bot now moves to the next waypoint immediately when within 2.5 studs of the current one,
+          preventing the character from decelerating to a halt at every step.
+        - Removed v1.90 "Dynamic Pauses" to ensure fluid movement.
+        - Optimized obstacle scanning frequency (0.1s -> 0.3s).
 
     - v1.89 UPDATE (Standardized Pathing):
         - Reverted AgentRadius to 2.0 and AgentHeight to 5.0.
-        - Kept AgentMaxSlope at 75.
-
-    - v1.88 FIX (Slope & Blockage Lenience):
-        - Added `AgentMaxSlope = 75`.
-        - DISABLED the `Path.Blocked` event trigger.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -189,7 +184,7 @@ makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
 
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.90 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.91 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -734,10 +729,6 @@ local function autoMineLoop()
                                 -- pathBlocked = true 
                             end)
                             
-                            -- v1.90: Dynamic Stabilization Logic
-                            -- Calculate the next random stop index (between 4 and 7 waypoints from start)
-                            local nextPauseIndex = 3 + math.random(1, 4)
-                            
                             for i, wp in ipairs(waypoints) do
                                 if i == 1 then continue end
                                 if pathBlocked then 
@@ -788,20 +779,13 @@ local function autoMineLoop()
                                     if wp.Position.Y >= root.Position.Y - 3.0 then hum:ChangeState(Enum.HumanoidStateType.Jumping); hum.Jump = true end
                                 end
                                 
-                                -- v1.90: Dynamic Stabilization Pause
-                                if i == nextPauseIndex then
-                                    -- Perform micro-pause to stabilize movement
-                                    task.wait(0.1 + (math.random() * 0.1)) -- Wait 0.1s to 0.2s
-                                    -- Calculate next random pause (4-7 steps ahead)
-                                    nextPauseIndex = i + 3 + math.random(1, 4)
-                                end
-                                
                                 local moveSuccess = false
                                 local connection = hum.MoveToFinished:Connect(function() moveSuccess = true end)
                                 hum:MoveTo(wp.Position)
                                 
                                 local timeElapsed = 0; local timeout = 3.0 -- v1.87: Increased to 3.0s
                                 local lastMovePos = root.Position
+                                local lastObstacleCheck = 0 -- v1.91: For optimization
                                 
                                 while not moveSuccess and timeElapsed < timeout do
                                     if not autoMineEnabled then break end
@@ -809,42 +793,40 @@ local function autoMineLoop()
                                     if hum.Health <= 0 then break end
                                     if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then moveSuccess = true; break end
                                     
-                                    -- v1.87: Fallback Success (Reach Check)
+                                    -- v1.91: SMOOTH PATHING - Skip to next WP if close
+                                    if (root.Position - wp.Position).Magnitude < 2.5 then
+                                        moveSuccess = true
+                                        break
+                                    end
+                                    
+                                    -- v1.87: Fallback Success (Reach Check for Target)
                                     if (root.Position - targetPos).Magnitude < 4.5 then
                                         moveSuccess = true; break
                                     end
 
                                     if getNearbyMob() then moveSuccess = true; break end
                                     
-                                    -- v1.85: UPDATED OBSTACLE LOGIC
-                                    -- Checks full mining radius. If it returns an ore, we MUST mine it.
-                                    local hitOre, isBlocked = checkObstaclesInFront(char)
-                                    
-                                    if isBlocked then
-                                        if hitOre then
-                                            -- IT IS AN ORE! Mine it.
+                                    -- v1.91: Optimized Obstacle Logic (Run every 0.3s)
+                                    if timeElapsed - lastObstacleCheck > 0.3 then
+                                        lastObstacleCheck = timeElapsed
+                                        local hitOre, isBlocked = checkObstaclesInFront(char)
+                                        if isBlocked and hitOre then
                                             logDebug("OBSTACLE: " .. hitOre.Name .. " detected in path. Mining...")
                                             updateStatus("Clearing obstacle: " .. hitOre.Name)
                                             equipPickaxe()
                                             faceTarget(getOrePosition(hitOre))
                                             mineTarget(hitOre)
                                             
-                                            -- Wait briefly for break
                                             local mineStart = tick()
                                             while hitOre.Parent and tick() - mineStart < 1.5 do
                                                 if not autoMineEnabled then break end
                                                 task.wait(0.1)
                                             end
-                                            
-                                            -- Force path recalculation (break movement loops)
-                                            moveSuccess = true 
-                                            pathBlocked = true 
-                                            break
+                                            moveSuccess = true; pathBlocked = true; break
                                         end
                                     end
                                     
                                     -- STUCK MONITOR (Handles Walls/Stuck)
-                                    -- v1.87: Relaxed: Dist < 0.1, Time > 2.5s
                                     if (root.Position - lastMovePos).Magnitude < 0.1 and timeElapsed > 2.5 then
                                         if (root.Position - targetPos).Magnitude < 15 then 
                                             logDebug("STUCK but close: Forcing Mine...")
@@ -852,7 +834,7 @@ local function autoMineLoop()
                                             moveSuccess = true; break
                                         else
                                             hum:ChangeState(Enum.HumanoidStateType.Jumping); hum.Jump = true
-                                            if timeElapsed > 4.0 then -- v1.87: Extended cutoff
+                                            if timeElapsed > 4.0 then 
                                                 logDebug("STUCK (Pos): Switching target...")
                                                 oreBlacklist[targetOre] = tick() + 10 
                                                 currentMiningOre = nil
@@ -1558,4 +1540,4 @@ task.spawn(function()
     end 
 end)
 
-logDebug("v1.90 Loaded - Dynamic Stabilization Active")
+logDebug("v1.91 Loaded - Smooth Continuous Pathing")
