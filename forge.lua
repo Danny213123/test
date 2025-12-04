@@ -1,14 +1,11 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.92)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.93)
     
-    - v1.92 UPDATE (Responsive Vacuum):
-        - REMOVED the 0.3s delay on obstacle checking. The bot now checks for ores in range 
-          every single movement tick (~0.1s). This fixes the issue where it would walk past ores.
-        - Adjusted interrupt logic so "Vacuuming" an ore doesn't blacklist your main target.
-
-    - v1.91 UPDATE (Smooth Continuous Pathing):
-        - Proximity skip for smooth walking.
-        - Standardized agent size.
+    - v1.93 UPDATE (Speed & Flow):
+        - IMPROVED: Waypoint Skipping increased to 6.0 studs. Bot now "cuts corners" 
+          to maintain full movement speed without stopping at every node.
+        - OPTIMIZED: Vacuum check is now aggressive. If you touch an ore, it dies.
+        - TUNED: Movement timeout and stuck detection for faster recovery.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -28,31 +25,35 @@ local SETTINGS_FILE = "orescanner_settings.json"
 local SCAN_DELAY = 0.2 
 local MINING_RADIUS = 12.0            
 local PLAYER_DETECTION_RADIUS = 45  
-local SURFACE_STOP_DISTANCE = 3.8    
+local SURFACE_STOP_DISTANCE = 3.8     
 local COMBAT_RADIUS = 15 
 local HIGHLIGHT_LIMIT = 30 
 local ESP_LIMIT = 150  
 local OPPORTUNITY_RADIUS = 25
 
+-- MOVEMENT TUNING (v1.93)
+local WAYPOINT_SKIP_DISTANCE = 6.0 -- Increased to prevent stopping
+local STUCK_TIMEOUT = 2.5
+
 -- TIMEOUT SETTINGS
 local ORE_BLACKLIST_DURATION = 30 
-local MAX_COMBAT_TIME = 15          
+local MAX_COMBAT_TIME = 15           
 local COMBAT_BLACKLIST_DURATION = 60 
 local TIMEOUT_PROXIMITY_THRESHOLD = 40 
 
--- v1.77: RESET TIMER
+-- RESET TIMER
 local IDLE_RESET_TIME = 60 
 
 local TARGET_LOCK_TIME = 5 
 
--- v1.73: Visual settings
+-- Visual settings
 local PATH_NODE_SIZE = 0.5
 local PATH_LINE_THICKNESS = 0.12
 local MAX_PATHS = 50 
 
--- v1.78: Visual Stability Tuning
+-- Visual Stability Tuning
 local PATH_UPDATE_INTERVAL = 1.0  
-local ESP_UPDATE_INTERVAL = 0.1       
+local ESP_UPDATE_INTERVAL = 0.1        
 local HIGHLIGHT_UPDATE_INTERVAL = 0.2 
 
 local lastPathUpdateTime = 0
@@ -69,14 +70,13 @@ local mobBlacklist = {}
 -- Default States
 local playerEspEnabled = false 
 local autoMineEnabled = false 
--- v1.80: Split Visual States
 local pathVisualsEnabled = true 
-local oreEspEnabled = true 
+local oreEspEnabled = true             
 
 local currentMiningOre = nil 
 local currentOreStartTime = 0 
 local currentMaxTime = 60 
-local lastOreHealth = 0     
+local lastOreHealth = 0      
 local currentCombatTarget = nil
 local currentCombatStartTime = 0
 local lastPathUpdate = 0 
@@ -120,8 +120,8 @@ local function saveSettings()
         orePriorityList = orePriorityList,
         playerEspEnabled = playerEspEnabled,
         autoMineEnabled = autoMineEnabled,
-        pathVisualsEnabled = pathVisualsEnabled, -- v1.80
-        oreEspEnabled = oreEspEnabled            -- v1.80
+        pathVisualsEnabled = pathVisualsEnabled, 
+        oreEspEnabled = oreEspEnabled            
     }
     pcall(function()
         if writefile then
@@ -138,7 +138,6 @@ local function loadSettings()
             if data.orePriorityList then orePriorityList = data.orePriorityList end
             if data.playerEspEnabled ~= nil then playerEspEnabled = data.playerEspEnabled end
             if data.autoMineEnabled ~= nil then autoMineEnabled = data.autoMineEnabled end
-            -- v1.80: Load split settings
             if data.pathVisualsEnabled ~= nil then pathVisualsEnabled = data.pathVisualsEnabled end
             if data.oreEspEnabled ~= nil then oreEspEnabled = data.oreEspEnabled end
         end
@@ -172,7 +171,6 @@ if not ScreenGui.Parent then ScreenGui.Parent = LocalPlayer:WaitForChild("Player
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "ScannerFrame"
--- v1.80: Increased height slightly for extra button
 MainFrame.Size = UDim2.new(0, 260, 0, 680) 
 MainFrame.Position = UDim2.new(0.8, 0, 0.1, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
@@ -183,13 +181,12 @@ makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
 
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.92 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.93 Speed Miner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
 -- Controls Container
 local ControlsContainer = Instance.new("Frame"); ControlsContainer.Name = "Controls"; 
--- v1.80: Increased container height
 ControlsContainer.Size = UDim2.new(1, 0, 0, 145); 
 ControlsContainer.Position = UDim2.new(0, 0, 0, 35); ControlsContainer.BackgroundTransparency = 1; ControlsContainer.Parent = MainFrame
 
@@ -202,7 +199,6 @@ local function createControl(name, yPos, text, color)
     return b
 end
 
--- v1.80: New Layout with separate toggles
 local PE_Toggle = createControl("PlayerESP_Control", 0, "Player ESP", Color3.fromRGB(255, 80, 80))
 local AM_Toggle = createControl("AutoMine_Control", 35, "Auto Mine/Attack", Color3.fromRGB(80, 255, 255))
 local Path_Toggle = createControl("Path_Control", 70, "Path Visuals", Color3.fromRGB(255, 100, 255))
@@ -210,12 +206,10 @@ local Ore_Toggle = createControl("Ore_Control", 105, "Ore ESP", Color3.fromRGB(1
 
 if playerEspEnabled then PE_Toggle.Text="ON"; PE_Toggle.BackgroundColor3=Color3.fromRGB(255,50,50) end
 if autoMineEnabled then AM_Toggle.Text="ON"; AM_Toggle.BackgroundColor3=Color3.fromRGB(0,255,255) end
--- v1.80: Set initial state for new toggles
 if pathVisualsEnabled then Path_Toggle.Text="ON"; Path_Toggle.BackgroundColor3=Color3.fromRGB(170, 0, 255) end
 if oreEspEnabled then Ore_Toggle.Text="ON"; Ore_Toggle.BackgroundColor3=Color3.fromRGB(0, 170, 0) end
 
 -- === DROPDOWNS ===
--- v1.80: Shifted Y position down
 local TargetHeader = Instance.new("Frame"); TargetHeader.Size = UDim2.new(1, -10, 0, 25); TargetHeader.Position = UDim2.new(0, 5, 0, 190); TargetHeader.BackgroundColor3 = Color3.fromRGB(45, 45, 45); TargetHeader.Parent = MainFrame; Instance.new("UICorner", TargetHeader).CornerRadius = UDim.new(0, 4)
 local TargetBtn = Instance.new("TextButton"); TargetBtn.Size = UDim2.new(1, 0, 1, 0); TargetBtn.BackgroundTransparency = 1; TargetBtn.Text = "Target Selection ▼"; TargetBtn.TextColor3 = Color3.fromRGB(200, 200, 200); TargetBtn.Font = Enum.Font.GothamBold; TargetBtn.TextSize = 12; TargetBtn.Parent = TargetHeader
 
@@ -274,10 +268,7 @@ local function getSurfaceDistance(characterRoot, targetOre)
     if raycastResult then return (origin - raycastResult.Position).Magnitude else return direction.Magnitude end
 end
 
--- v1.82 IMPROVED: Spatial Query instead of single Raycast
--- v1.83 FIX: Only returns true for isBlocked if it is an ORE. Walls are ignored here.
--- v1.84 UPDATE: Scans entire MINING_RADIUS around player to vacuum ores along path.
--- v1.85 UPDATE: Explicitly checks "on each ore" from the known list (Vacuum Mode).
+-- v1.93: VACUUM CHECK - Optimized for instant detection
 local function checkObstaclesInFront(character)
     local root = character:FindFirstChild("HumanoidRootPart")
     if not root then return nil, false end
@@ -289,7 +280,13 @@ local function checkObstaclesInFront(character)
     for oreName, isEnabled in pairs(oreToggleStates) do
         if isEnabled and lastScanResults[oreName] then
             for _, ore in ipairs(lastScanResults[oreName].Instances) do
-                if ore ~= currentMiningOre and isValidOre(ore) then
+                if ore ~= currentMiningOre and ore.Parent then -- Must check Parent
+                    local h = tonumber(ore:GetAttribute("Health"))
+                    local max = tonumber(ore:GetAttribute("MaxHealth"))
+                    if h and max and h < max then
+                         -- If ore is already damaged, it's a high priority obstacle/kill
+                    end
+
                     local pos = getOrePosition(ore)
                     if pos then
                         local dist = (root.Position - pos).Magnitude
@@ -391,7 +388,7 @@ local function setTarget(ore)
         if pos then dist = (root.Position - pos).Magnitude end
     end
     
-    local travelTime = (dist / 12) + 20 
+    local travelTime = (dist / 14) + 20 -- Tuned for faster walk
     currentMaxTime = travelTime
     
     StatusLabel.Text = "Status: Target " .. ore.Name .. " ("..math.floor(travelTime).."s)"
@@ -432,8 +429,6 @@ local function isValidOre(ore)
     return true
 end
 
--- v1.81: NEW - Add PathfindingModifier to Ores
--- This makes the PathfindingService ignore them (treat as transparent) when computing paths
 local function addPathModifier(oreModel)
     if not oreModel then return end
     local parts = {}
@@ -446,7 +441,7 @@ local function addPathModifier(oreModel)
         if not part:FindFirstChild("OrePathMod") then
             local mod = Instance.new("PathfindingModifier")
             mod.Name = "OrePathMod"
-            mod.PassThrough = true -- MAGIC: Tells pathfinder this isn't an obstacle
+            mod.PassThrough = true 
             mod.Parent = part
         end
     end
@@ -576,10 +571,10 @@ local function getBestOre()
                     if i % 5 == 0 then task.wait() end
                     
                     local path = PathfindingService:CreatePath({
-                        AgentRadius = 2.0, -- v1.89: Standardized
-                        AgentHeight = 5.0, -- v1.89: Standardized
+                        AgentRadius = 2.0, 
+                        AgentHeight = 5.0, 
                         AgentCanJump = true, 
-                        AgentMaxSlope = 75, -- v1.88: Added high slope tolerance
+                        AgentMaxSlope = 75, 
                         Costs = { Water = 20 }
                     })
                     local success = pcall(function() path:ComputeAsync(root.Position, entry.Pos) end)
@@ -615,7 +610,7 @@ end
 local function updateStatus(text) StatusLabel.Text = "Status: " .. text end
 
 local function autoMineLoop()
-    logDebug("Auto System Started")
+    logDebug("Auto System Started v1.93")
     lastIdleTime = tick()
     local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if root then lastIdlePos = root.Position end
@@ -711,10 +706,10 @@ local function autoMineLoop()
                     else
                         updateStatus("Moving to " .. targetOre.Name)
                         local path = PathfindingService:CreatePath({
-                            AgentRadius = 2.0, -- v1.89: Standardized
-                            AgentHeight = 5.0, -- v1.89: Standardized
+                            AgentRadius = 2.0, 
+                            AgentHeight = 5.0, 
                             AgentCanJump = true, 
-                            AgentMaxSlope = 75, -- v1.88: Added high slope tolerance
+                            AgentMaxSlope = 75, 
                             Costs = { Water = 20 }
                         })
                         local success = pcall(function() path:ComputeAsync(root.Position, targetPos) end)
@@ -722,30 +717,34 @@ local function autoMineLoop()
                         if success and path.Status == Enum.PathStatus.Success then
                             local waypoints = path:GetWaypoints()
                             local pathBlocked = false
-                            local vacuumInterrupt = false -- v1.92: New flag for obstacle interrupts
+                            local vacuumInterrupt = false 
                             
-                            local blockedConn; blockedConn = path.Blocked:Connect(function() 
-                                -- v1.88: Disabled auto-block logic. Just log it.
-                                -- logDebug("Path signal: Blocked (Ignored for lenience)")
-                                -- pathBlocked = true 
-                            end)
+                            local blockedConn; blockedConn = path.Blocked:Connect(function() end)
                             
                             for i, wp in ipairs(waypoints) do
                                 if i == 1 then continue end
-                                if pathBlocked then 
-                                    -- v1.86 FIX: Force target switch on engine block signal
-                                    logDebug("Path invalidated (Event). Switching target.")
-                                    if targetOre then
-                                        oreBlacklist[targetOre] = tick() + 5
-                                    end
-                                    currentMiningOre = nil
-                                    break 
-                                end
-                                if vacuumInterrupt then -- v1.92: Resume/Recalc after vacuum
-                                    logDebug("Resuming after obstacle clear...")
-                                    break 
-                                end
                                 
+                                -- v1.93: VACUUM CHECK - Run aggressively
+                                local hitOre, isBlocked = checkObstaclesInFront(char)
+                                if isBlocked and hitOre then
+                                    logDebug("VACUUM: Mining " .. hitOre.Name)
+                                    updateStatus("Vacuuming: " .. hitOre.Name)
+                                    equipPickaxe()
+                                    faceTarget(getOrePosition(hitOre))
+                                    mineTarget(hitOre)
+                                    
+                                    local mineStart = tick()
+                                    while hitOre.Parent and tick() - mineStart < 1.0 do
+                                        if not autoMineEnabled then break end
+                                        -- Keep moving while mining if possible, or stop to focus? 
+                                        -- Vacuum typically implies moving while mining, but for stability we pause slightly
+                                        hum:MoveTo(root.Position)
+                                        task.wait(0.1)
+                                    end
+                                    vacuumInterrupt = true
+                                    break 
+                                end
+
                                 if not autoMineEnabled or not currentMiningOre or not currentMiningOre.Parent then break end
                                 if getNearbyMob() then break end
                                 if tick() - currentOreStartTime > currentMaxTime then break end
@@ -786,72 +785,52 @@ local function autoMineLoop()
                                 end
                                 
                                 local moveSuccess = false
-                                local connection = hum.MoveToFinished:Connect(function() moveSuccess = true end)
                                 hum:MoveTo(wp.Position)
                                 
-                                local timeElapsed = 0; local timeout = 3.0 -- v1.87: Increased to 3.0s
+                                local timeElapsed = 0
                                 local lastMovePos = root.Position
                                 
-                                while not moveSuccess and timeElapsed < timeout do
+                                -- MOVEMENT WAIT LOOP
+                                while not moveSuccess and timeElapsed < STUCK_TIMEOUT do
                                     if not autoMineEnabled then break end
-                                    if pathBlocked then break end
                                     if hum.Health <= 0 then break end
                                     if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then moveSuccess = true; break end
                                     
-                                    -- v1.91: SMOOTH PATHING - Skip to next WP if close
-                                    if (root.Position - wp.Position).Magnitude < 2.5 then
+                                    -- v1.93: IMPROVED CORNER CUTTING
+                                    -- If within X studs of waypoint, immediately move to next.
+                                    if (root.Position - wp.Position).Magnitude < WAYPOINT_SKIP_DISTANCE then
                                         moveSuccess = true
-                                        break
+                                        break -- Breaks wait loop, outer loop continues to next WP instantly
                                     end
                                     
-                                    -- v1.87: Fallback Success (Reach Check for Target)
                                     if (root.Position - targetPos).Magnitude < 4.5 then
                                         moveSuccess = true; break
                                     end
 
                                     if getNearbyMob() then moveSuccess = true; break end
                                     
-                                    -- v1.92: VACUUM CHECK (Run every tick for responsiveness)
-                                    local hitOre, isBlocked = checkObstaclesInFront(char)
-                                    if isBlocked and hitOre then
-                                        logDebug("OBSTACLE: " .. hitOre.Name .. " detected in path. Mining...")
-                                        updateStatus("Clearing obstacle: " .. hitOre.Name)
-                                        equipPickaxe()
-                                        faceTarget(getOrePosition(hitOre))
-                                        mineTarget(hitOre)
-                                        
-                                        local mineStart = tick()
-                                        while hitOre.Parent and tick() - mineStart < 1.5 do
-                                            if not autoMineEnabled then break end
-                                            task.wait(0.1)
-                                        end
-                                        -- v1.92: Interrupt movement but DO NOT blacklist main target
-                                        moveSuccess = true 
-                                        vacuumInterrupt = true
-                                        break
+                                    -- Vacuum Check inside move loop
+                                    local vOre, vBlock = checkObstaclesInFront(char)
+                                    if vBlock and vOre then
+                                         -- break out to handle vacuum in outer loop
+                                         moveSuccess = true 
+                                         break 
                                     end
                                     
-                                    -- STUCK MONITOR (Handles Walls/Stuck)
-                                    if (root.Position - lastMovePos).Magnitude < 0.1 and timeElapsed > 2.5 then
-                                        if (root.Position - targetPos).Magnitude < 15 then 
-                                            logDebug("STUCK but close: Forcing Mine...")
-                                            equipPickaxe(); faceTarget(targetPos); mineTarget(targetOre) 
-                                            moveSuccess = true; break
-                                        else
-                                            hum:ChangeState(Enum.HumanoidStateType.Jumping); hum.Jump = true
-                                            if timeElapsed > 4.0 then 
-                                                logDebug("STUCK (Pos): Switching target...")
-                                                oreBlacklist[targetOre] = tick() + 10 
-                                                currentMiningOre = nil
-                                                moveSuccess = true; pathBlocked = true
-                                            end
+                                    -- STUCK MONITOR
+                                    if (root.Position - lastMovePos).Magnitude < 0.1 and timeElapsed > 1.0 then
+                                        hum:ChangeState(Enum.HumanoidStateType.Jumping); hum.Jump = true
+                                        if timeElapsed > 2.0 then 
+                                            oreBlacklist[targetOre] = tick() + 10 
+                                            currentMiningOre = nil
+                                            moveSuccess = true
                                         end
                                     end
                                     
                                     lastMovePos = root.Position
-                                    task.wait(0.1); timeElapsed = timeElapsed + 0.1
+                                    task.wait() -- Minimal wait for max tick rate
+                                    timeElapsed = timeElapsed + 0.03 -- approximate tick time
                                 end
-                                if connection then connection:Disconnect() end
                             end
                             if blockedConn then blockedConn:Disconnect() end
                         else
@@ -934,8 +913,6 @@ if LocalPlayer.Character then onCharacterAdded(LocalPlayer.Character) end
 
 -- 8. ENTITY ESP & HIGHLIGHTS
 local function updateEntityESP()
-    -- v1.80: Removed global visual check so Mob ESP runs with Auto Mine independently
-    
     if tick() - lastESPUpdateTime < ESP_UPDATE_INTERVAL then return end
     lastESPUpdateTime = tick()
 
@@ -968,7 +945,6 @@ end
 
 -- v1.79: NEW GLOBAL HIGHLIGHT SYSTEM (Restored v1.56 Sphere Visuals)
 local function updateAllHighlights(scanData)
-    -- v1.80: Check specific oreEspEnabled flag
     if not oreEspEnabled then
         for name, data in pairs(scanData) do
             for _, model in ipairs(data.Instances) do
@@ -997,7 +973,6 @@ local function updateAllHighlights(scanData)
                 end
                 table.insert(allCandidates, {model = model, dist = dist, name = name})
             else
-                -- If disabled type, ensure visuals are hidden/destroyed
                 local h = model:FindFirstChild("OreHighlight")
                 if h then h.Enabled = false end
                 local r = model:FindFirstChild("OreRadiusVisual")
@@ -1010,10 +985,8 @@ local function updateAllHighlights(scanData)
         end
     end
     
-    -- 3. SORT globally by distance
     table.sort(allCandidates, function(a, b) return a.dist < b.dist end)
     
-    -- 4. APPLY highlights with strict limit
     for i, entry in ipairs(allCandidates) do
         local model = entry.model
         local oreName = entry.name
@@ -1024,7 +997,6 @@ local function updateAllHighlights(scanData)
         local statusRad = model:FindFirstChild("OreStatusRadius")
         local espGui = model:FindFirstChild("OreESPGui")
         
-        -- STRICT LIMIT: Only the first 30 get highlights
         if i > HIGHLIGHT_LIMIT then
             if highlight then highlight.Enabled = false end
             if radiusVis then radiusVis.Visible = false end
@@ -1048,7 +1020,6 @@ local function updateAllHighlights(scanData)
                 highlightColor = Color3.fromRGB(0, 255, 255)
             end
 
-            -- 1. Highlight (Glow)
             if not highlight then 
                 highlight = Instance.new("Highlight")
                 highlight.Name = "OreHighlight"
@@ -1062,7 +1033,6 @@ local function updateAllHighlights(scanData)
             highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
             highlight.OutlineTransparency = 0
             
-            -- 2. Radius Sphere (v1.56 Restoration)
             if not radiusVis then
                 radiusVis = Instance.new("SphereHandleAdornment")
                 radiusVis.Name = "OreRadiusVisual"
@@ -1074,23 +1044,21 @@ local function updateAllHighlights(scanData)
             end
             radiusVis.Visible = true
             radiusVis.Radius = MINING_RADIUS
-            radiusVis.Color3 = highlightColor -- Match status color
+            radiusVis.Color3 = highlightColor 
             
-            -- 3. Status/Player Detection Radius Sphere (v1.56 Restoration)
             if not statusRad then
                 statusRad = Instance.new("SphereHandleAdornment")
                 statusRad.Name = "OreStatusRadius"
                 local center = model:IsA("Model") and (model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")) or model
                 if center then statusRad.Adornee = center end
                 statusRad.AlwaysOnTop = true
-                statusRad.Transparency = 0.9 -- Very faint
+                statusRad.Transparency = 0.9 
                 statusRad.Parent = model
             end
             statusRad.Visible = true
             statusRad.Radius = PLAYER_DETECTION_RADIUS
             statusRad.Color3 = statusColor
             
-            -- 4. Text Billboard (Kept from v1.72+ for utility)
             if not espGui then
                 espGui = Instance.new("BillboardGui")
                 espGui.Name = "OreESPGui"
@@ -1137,9 +1105,7 @@ local function updateAllHighlights(scanData)
     end
 end
 
--- v1.76: FIXED Path Visualization - Clear only when actually updating
 local function updatePaths()
-    -- v1.80: Check specific pathVisualsEnabled flag
     if not pathVisualsEnabled then 
         pathVisualsFolder:ClearAllChildren()
         return 
@@ -1150,7 +1116,6 @@ local function updatePaths()
     
     pathVisualsFolder:ClearAllChildren()
     
-    -- v1.80: Duplicate check (safety)
     if not pathVisualsEnabled then return end
     local char = LocalPlayer.Character
     if not char then return end
@@ -1279,7 +1244,6 @@ local function scanOres()
             if not skip then
                 local pos = getOrePosition(descendant)
                 if pos then 
-                    -- v1.81: Ensure this ore has a PathModifier
                     addPathModifier(descendant)
 
                     local n = descendant.Name
@@ -1298,7 +1262,6 @@ local function scanOres()
     
     lastScanResults = current
     
-    -- v1.79: Global Highlight Update logic
     local shouldUpdateHighlights = (tick() - lastHighlightUpdateTime) >= HIGHLIGHT_UPDATE_INTERVAL
     if shouldUpdateHighlights then
         lastHighlightUpdateTime = tick()
@@ -1360,7 +1323,6 @@ local function refreshGui()
                         b.Text = "OFF"
                         b.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
                         logDebug("Disabled ESP for: " .. name)
-                        -- Trigger immediate cleanup for this type
                         updateAllHighlights(lastScanResults)
                     end
                     saveSettings() 
@@ -1455,7 +1417,6 @@ local function refreshGui()
     PriorityList.CanvasSize = UDim2.new(0, 0, 0, PriorityLayout.AbsoluteContentSize.Y)
 end
 
--- Toggle handlers
 PE_Toggle.MouseButton1Click:Connect(function() 
     playerEspEnabled = not playerEspEnabled
     if playerEspEnabled then 
@@ -1480,13 +1441,11 @@ AM_Toggle.MouseButton1Click:Connect(function()
         AM_Toggle.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
         currentMiningOre = nil
         updateStatus("Idle") 
-        -- v1.80: Clean up Mob ESP immediately on disable
         updateEntityESP()
     end 
     saveSettings()
 end)
 
--- v1.80: New handlers for split visuals
 Path_Toggle.MouseButton1Click:Connect(function()
     pathVisualsEnabled = not pathVisualsEnabled
     if pathVisualsEnabled then 
@@ -1513,7 +1472,7 @@ Ore_Toggle.MouseButton1Click:Connect(function()
         Ore_Toggle.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
         logDebug("Ore ESP DISABLED")
         if lastScanResults then
-            updateAllHighlights(lastScanResults) -- Triggers cleanup loop inside
+            updateAllHighlights(lastScanResults) 
         end
     end
     saveSettings()
@@ -1528,7 +1487,6 @@ CloseBtn.MouseButton1Click:Connect(function()
     pathVisualsFolder:Destroy()
     oreVisualsFolder:Destroy()
     if lastScanResults then
-        -- Force disable visuals for cleanup
         local oldState = oreEspEnabled
         oreEspEnabled = false
         updateAllHighlights(lastScanResults)
@@ -1537,7 +1495,6 @@ CloseBtn.MouseButton1Click:Connect(function()
     autoMineEnabled = false 
 end)
 
--- Main loop
 task.spawn(function() 
     while true do 
         refreshGui()
@@ -1545,4 +1502,4 @@ task.spawn(function()
     end 
 end)
 
-logDebug("v1.92 Loaded - Responsive Vacuum & Interrupts")
+logDebug("v1.93 Speed Miner Loaded")
