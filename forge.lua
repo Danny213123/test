@@ -1,14 +1,15 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.87)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.88)
+    
+    - v1.88 FIX (Slope & Blockage Lenience):
+        - Added `AgentMaxSlope = 75` to allow climbing steep terrain/crystals.
+        - DISABLED the `Path.Blocked` event trigger. The bot now ignores "Path Blocked" signals
+          (which are often false positives on slopes) and ONLY switches targets if it 
+          physically gets stuck (Stuck Monitor).
     
     - v1.87 FIX (Lenient Movement):
-        - Reduced `AgentRadius` (2.0 -> 1.5) and `AgentHeight` (3.5 -> 3.0) to navigate tighter spaces.
-        - Increased Waypoint Timeout (1.0s -> 3.0s) to prevent "stopping every few steps".
-        - Relaxed Stuck Monitor: Now waits 2.5s (was 1.0s) before attempting unstuck jumps.
-        - Added fallback distance checks to ensure the bot reaches the target.
-
-    - v1.86 FIX (Anti-Spam):
-        - Fixed "PATH BLOCKED" spam loop.
+        - Reduced `AgentRadius` and `AgentHeight`.
+        - Relaxed Stuck Monitor.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -183,7 +184,7 @@ makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
 
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.87 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.88 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -579,6 +580,7 @@ local function getBestOre()
                         AgentRadius = 1.5, -- v1.87: Reduced from 2.0 for lenient pathing
                         AgentHeight = 3.0, -- v1.87: Reduced from 3.5
                         AgentCanJump = true, 
+                        AgentMaxSlope = 75, -- v1.88: Added high slope tolerance
                         Costs = { Water = 20 }
                     })
                     local success = pcall(function() path:ComputeAsync(root.Position, entry.Pos) end)
@@ -713,6 +715,7 @@ local function autoMineLoop()
                             AgentRadius = 1.5,  -- v1.87: Reduced from 2.0 for better clearance
                             AgentHeight = 3.0,  -- v1.87: Reduced from 3.5
                             AgentCanJump = true, 
+                            AgentMaxSlope = 75, -- v1.88: Added high slope tolerance
                             Costs = { Water = 20 }
                         })
                         local success = pcall(function() path:ComputeAsync(root.Position, targetPos) end)
@@ -720,7 +723,11 @@ local function autoMineLoop()
                         if success and path.Status == Enum.PathStatus.Success then
                             local waypoints = path:GetWaypoints()
                             local pathBlocked = false
-                            local blockedConn; blockedConn = path.Blocked:Connect(function() logDebug("PATH BLOCKED"); pathBlocked = true end)
+                            local blockedConn; blockedConn = path.Blocked:Connect(function() 
+                                -- v1.88: Disabled auto-block logic. Just log it.
+                                -- logDebug("Path signal: Blocked (Ignored for lenience)")
+                                -- pathBlocked = true 
+                            end)
                             
                             for i, wp in ipairs(waypoints) do
                                 if i == 1 then continue end
@@ -1534,4 +1541,4 @@ task.spawn(function()
     end 
 end)
 
-logDebug("v1.87 Loaded - Lenient Pathfinding Mode")
+logDebug("v1.88 Loaded - Slope & Blockage Lenience Active")
