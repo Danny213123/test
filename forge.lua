@@ -1,15 +1,20 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.88)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.90)
     
+    - v1.90 UPDATE (Dynamic Stabilization):
+        - Implemented "Dynamic Micro-Pauses" during pathfinding.
+        - Instead of stopping rigidly every X steps, the bot now calculates random intervals
+          (every 4-7 waypoints) to briefly pause (0.1s-0.2s).
+        - This prevents "robotic" continuous movement and stabilizes the character on uneven terrain
+          without feeling repetitive.
+
+    - v1.89 UPDATE (Standardized Pathing):
+        - Reverted AgentRadius to 2.0 and AgentHeight to 5.0.
+        - Kept AgentMaxSlope at 75.
+
     - v1.88 FIX (Slope & Blockage Lenience):
-        - Added `AgentMaxSlope = 75` to allow climbing steep terrain/crystals.
-        - DISABLED the `Path.Blocked` event trigger. The bot now ignores "Path Blocked" signals
-          (which are often false positives on slopes) and ONLY switches targets if it 
-          physically gets stuck (Stuck Monitor).
-    
-    - v1.87 FIX (Lenient Movement):
-        - Reduced `AgentRadius` and `AgentHeight`.
-        - Relaxed Stuck Monitor.
+        - Added `AgentMaxSlope = 75`.
+        - DISABLED the `Path.Blocked` event trigger.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -29,7 +34,7 @@ local SETTINGS_FILE = "orescanner_settings.json"
 local SCAN_DELAY = 0.2 
 local MINING_RADIUS = 12.0            
 local PLAYER_DETECTION_RADIUS = 45  
-local SURFACE_STOP_DISTANCE = 3.8    -- Increased slightly for easier reach
+local SURFACE_STOP_DISTANCE = 3.8    
 local COMBAT_RADIUS = 15 
 local HIGHLIGHT_LIMIT = 30 
 local ESP_LIMIT = 150  
@@ -184,7 +189,7 @@ makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
 
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.88 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.90 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -577,8 +582,8 @@ local function getBestOre()
                     if i % 5 == 0 then task.wait() end
                     
                     local path = PathfindingService:CreatePath({
-                        AgentRadius = 1.5, -- v1.87: Reduced from 2.0 for lenient pathing
-                        AgentHeight = 3.0, -- v1.87: Reduced from 3.5
+                        AgentRadius = 2.0, -- v1.89: Standardized
+                        AgentHeight = 5.0, -- v1.89: Standardized
                         AgentCanJump = true, 
                         AgentMaxSlope = 75, -- v1.88: Added high slope tolerance
                         Costs = { Water = 20 }
@@ -712,8 +717,8 @@ local function autoMineLoop()
                     else
                         updateStatus("Moving to " .. targetOre.Name)
                         local path = PathfindingService:CreatePath({
-                            AgentRadius = 1.5,  -- v1.87: Reduced from 2.0 for better clearance
-                            AgentHeight = 3.0,  -- v1.87: Reduced from 3.5
+                            AgentRadius = 2.0, -- v1.89: Standardized
+                            AgentHeight = 5.0, -- v1.89: Standardized
                             AgentCanJump = true, 
                             AgentMaxSlope = 75, -- v1.88: Added high slope tolerance
                             Costs = { Water = 20 }
@@ -728,6 +733,10 @@ local function autoMineLoop()
                                 -- logDebug("Path signal: Blocked (Ignored for lenience)")
                                 -- pathBlocked = true 
                             end)
+                            
+                            -- v1.90: Dynamic Stabilization Logic
+                            -- Calculate the next random stop index (between 4 and 7 waypoints from start)
+                            local nextPauseIndex = 3 + math.random(1, 4)
                             
                             for i, wp in ipairs(waypoints) do
                                 if i == 1 then continue end
@@ -777,6 +786,14 @@ local function autoMineLoop()
                                 updateStatus("Moving to " .. targetOre.Name)
                                 if wp.Action == Enum.PathWaypointAction.Jump then 
                                     if wp.Position.Y >= root.Position.Y - 3.0 then hum:ChangeState(Enum.HumanoidStateType.Jumping); hum.Jump = true end
+                                end
+                                
+                                -- v1.90: Dynamic Stabilization Pause
+                                if i == nextPauseIndex then
+                                    -- Perform micro-pause to stabilize movement
+                                    task.wait(0.1 + (math.random() * 0.1)) -- Wait 0.1s to 0.2s
+                                    -- Calculate next random pause (4-7 steps ahead)
+                                    nextPauseIndex = i + 3 + math.random(1, 4)
                                 end
                                 
                                 local moveSuccess = false
@@ -1541,4 +1558,4 @@ task.spawn(function()
     end 
 end)
 
-logDebug("v1.88 Loaded - Slope & Blockage Lenience Active")
+logDebug("v1.90 Loaded - Dynamic Stabilization Active")
