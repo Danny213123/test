@@ -295,21 +295,30 @@ local function checkObstaclesInFront(character)
     -- Get all parts in that sphere
     local parts = Workspace:GetPartBoundsInRadius(detectionPoint, checkRadius, overlapParams)
     
+    local foundWall = false
+    
     for _, part in ipairs(parts) do
         if part.CanCollide then
             -- Check if this part belongs to an Ore (has Health attribute)
             local currentCheck = part
+            local isOre = false
             while currentCheck and currentCheck ~= Workspace do
                 if currentCheck:GetAttribute("Health") then
-                    return currentCheck, true -- Found an ORE
+                    return currentCheck, true -- Found an ORE! Priority return.
                 end
                 currentCheck = currentCheck.Parent
             end
             
-            -- If we are here, we hit a collidable part that is NOT an ore (like a wall)
-            -- We just return true for "blocked" but nil for the ore
-            return nil, true 
+            -- If we are here, we hit a collidable part that is NOT an ore
+            -- Only mark as wall if it's not the Terrain floor (optional, but safer)
+            if part.Name ~= "Terrain" then
+                foundWall = true
+            end
         end
+    end
+    
+    if foundWall then
+        return nil, true -- No ores found, but something is blocking us
     end
     
     return nil, false -- Path is clear
