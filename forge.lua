@@ -1,13 +1,14 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.86)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.87)
     
+    - v1.87 FIX (Lenient Movement):
+        - Reduced `AgentRadius` (2.0 -> 1.5) and `AgentHeight` (3.5 -> 3.0) to navigate tighter spaces.
+        - Increased Waypoint Timeout (1.0s -> 3.0s) to prevent "stopping every few steps".
+        - Relaxed Stuck Monitor: Now waits 2.5s (was 1.0s) before attempting unstuck jumps.
+        - Added fallback distance checks to ensure the bot reaches the target.
+
     - v1.86 FIX (Anti-Spam):
         - Fixed "PATH BLOCKED" spam loop.
-        - When the PathfindingService signals a block, the bot now properly drops the current target
-          and temporary blacklists it (5s) to force a recalculation/retargeting instead of infinitely retrying.
-
-    - v1.85 UPDATE (Iterative Vacuum):
-        - Vacuum mining logic.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -27,7 +28,7 @@ local SETTINGS_FILE = "orescanner_settings.json"
 local SCAN_DELAY = 0.2 
 local MINING_RADIUS = 12.0            
 local PLAYER_DETECTION_RADIUS = 45  
-local SURFACE_STOP_DISTANCE = 3.5    
+local SURFACE_STOP_DISTANCE = 3.8    -- Increased slightly for easier reach
 local COMBAT_RADIUS = 15 
 local HIGHLIGHT_LIMIT = 30 
 local ESP_LIMIT = 150  
@@ -182,7 +183,7 @@ makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
 
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.86 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.87 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -575,8 +576,8 @@ local function getBestOre()
                     if i % 5 == 0 then task.wait() end
                     
                     local path = PathfindingService:CreatePath({
-                        AgentRadius = 2.0, 
-                        AgentHeight = 3.5, 
+                        AgentRadius = 1.5, -- v1.87: Reduced from 2.0 for lenient pathing
+                        AgentHeight = 3.0, -- v1.87: Reduced from 3.5
                         AgentCanJump = true, 
                         Costs = { Water = 20 }
                     })
@@ -709,8 +710,8 @@ local function autoMineLoop()
                     else
                         updateStatus("Moving to " .. targetOre.Name)
                         local path = PathfindingService:CreatePath({
-                            AgentRadius = 2.0, 
-                            AgentHeight = 3.5, 
+                            AgentRadius = 1.5,  -- v1.87: Reduced from 2.0 for better clearance
+                            AgentHeight = 3.0,  -- v1.87: Reduced from 3.5
                             AgentCanJump = true, 
                             Costs = { Water = 20 }
                         })
@@ -775,7 +776,7 @@ local function autoMineLoop()
                                 local connection = hum.MoveToFinished:Connect(function() moveSuccess = true end)
                                 hum:MoveTo(wp.Position)
                                 
-                                local timeElapsed = 0; local timeout = 1.0
+                                local timeElapsed = 0; local timeout = 3.0 -- v1.87: Increased to 3.0s
                                 local lastMovePos = root.Position
                                 
                                 while not moveSuccess and timeElapsed < timeout do
@@ -783,6 +784,12 @@ local function autoMineLoop()
                                     if pathBlocked then break end
                                     if hum.Health <= 0 then break end
                                     if getSurfaceDistance(root, targetOre) <= SURFACE_STOP_DISTANCE then moveSuccess = true; break end
+                                    
+                                    -- v1.87: Fallback Success (Reach Check)
+                                    if (root.Position - targetPos).Magnitude < 4.5 then
+                                        moveSuccess = true; break
+                                    end
+
                                     if getNearbyMob() then moveSuccess = true; break end
                                     
                                     -- v1.85: UPDATED OBSTACLE LOGIC
@@ -813,14 +820,15 @@ local function autoMineLoop()
                                     end
                                     
                                     -- STUCK MONITOR (Handles Walls/Stuck)
-                                    if (root.Position - lastMovePos).Magnitude < 0.2 and timeElapsed > 1.0 then
+                                    -- v1.87: Relaxed: Dist < 0.1, Time > 2.5s
+                                    if (root.Position - lastMovePos).Magnitude < 0.1 and timeElapsed > 2.5 then
                                         if (root.Position - targetPos).Magnitude < 15 then 
                                             logDebug("STUCK but close: Forcing Mine...")
                                             equipPickaxe(); faceTarget(targetPos); mineTarget(targetOre) 
                                             moveSuccess = true; break
                                         else
                                             hum:ChangeState(Enum.HumanoidStateType.Jumping); hum.Jump = true
-                                            if timeElapsed > 1.5 then 
+                                            if timeElapsed > 4.0 then -- v1.87: Extended cutoff
                                                 logDebug("STUCK (Pos): Switching target...")
                                                 oreBlacklist[targetOre] = tick() + 10 
                                                 currentMiningOre = nil
@@ -1526,4 +1534,4 @@ task.spawn(function()
     end 
 end)
 
-logDebug("v1.86 Loaded - Anti-Spam Fixed")
+logDebug("v1.87 Loaded - Lenient Pathfinding Mode")
