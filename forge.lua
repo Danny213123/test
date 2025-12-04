@@ -1,16 +1,13 @@
 --[[ 
-    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.85)
+    ORE SCANNER + PATHFINDING + AUTO MINE + AUTO ATTACK (Ultimate Version v1.86)
     
-    - v1.85 UPDATE (Iterative Vacuum):
-        - Changed `checkObstaclesInFront` to iterate directly through detected ores.
-        - Now strictly checks "on each ore" to see if the player intersects its `MINING_RADIUS`.
-        - Ensures only ENABLED ores are "vacuumed" while walking.
-        
-    - v1.84 UPDATE (Opportunity/Obstacle Vacuum):
-        - Added vacuum behavior.
+    - v1.86 FIX (Anti-Spam):
+        - Fixed "PATH BLOCKED" spam loop.
+        - When the PathfindingService signals a block, the bot now properly drops the current target
+          and temporary blacklists it (5s) to force a recalculation/retargeting instead of infinitely retrying.
 
-    - v1.83 FIX (Wall Obstacle Logic):
-        - Fixed "Constant switching target" bug.
+    - v1.85 UPDATE (Iterative Vacuum):
+        - Vacuum mining logic.
 ]]
 
 local Workspace = game:GetService("Workspace")
@@ -185,7 +182,7 @@ makeDraggable(MainFrame)
 
 local UICorner = Instance.new("UICorner"); UICorner.Parent = MainFrame
 
-local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.85 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
+local Title = Instance.new("TextLabel"); Title.Size = UDim2.new(1, 0, 0, 30); Title.BackgroundTransparency = 1; Title.Text = "v1.86 Ore Scanner"; Title.TextColor3 = Color3.fromRGB(255, 255, 255); Title.Font = Enum.Font.GothamBold; Title.TextSize = 16; Title.Parent = MainFrame
 
 local CloseBtn = Instance.new("TextButton"); CloseBtn.Name = "CloseButton"; CloseBtn.Size = UDim2.new(0, 30, 0, 30); CloseBtn.Position = UDim2.new(1, -30, 0, 0); CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "X"; CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200); CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 18; CloseBtn.ZIndex = 10; CloseBtn.Parent = MainFrame
 
@@ -726,7 +723,15 @@ local function autoMineLoop()
                             
                             for i, wp in ipairs(waypoints) do
                                 if i == 1 then continue end
-                                if pathBlocked then break end
+                                if pathBlocked then 
+                                    -- v1.86 FIX: Force target switch on engine block signal
+                                    logDebug("Path invalidated (Event). Switching target.")
+                                    if targetOre then
+                                        oreBlacklist[targetOre] = tick() + 5
+                                    end
+                                    currentMiningOre = nil
+                                    break 
+                                end
                                 if not autoMineEnabled or not currentMiningOre or not currentMiningOre.Parent then break end
                                 if getNearbyMob() then break end
                                 if tick() - currentOreStartTime > currentMaxTime then break end
@@ -1521,4 +1526,4 @@ task.spawn(function()
     end 
 end)
 
-logDebug("v1.85 Loaded - Iterative Vacuum Mode Active")
+logDebug("v1.86 Loaded - Anti-Spam Fixed")
