@@ -195,7 +195,113 @@ Features that are **trivial in React** but **impossible or prohibitively expensi
 
 ---
 
-## 3. The God File: `__init__.py`
+## 3. Why Sphinx Forces You to Duplicate HTML Code
+
+The absence of a component model in Sphinx creates a **structural inevitability**: any HTML pattern that appears in more than one context must be duplicated, because there is no mechanism to define it once and render it with different data.
+
+### 3.1 The Grid Item: One Card, Three Implementations
+
+A "blog card" — a thumbnail, title, description, date, and author — is the most common UI element on the platform. In React, this is one component (`<BlogCard />`) imported wherever needed. In `rocm-blogs-sphinx`, the same card requires **three separate code paths**:
+
+| Implementation | File | Lines | Purpose |
+|---|---|---|---|
+| `generate_grid()` | `grid.py` | **570** | Core grid item generation — HTML template, image resolution, WebP conversion, author formatting, date formatting, description extraction |
+| `_generate_grid_items()` | `process.py` | **220** | Wrapper #1 — deduplication logic, thread pool orchestration, `used_blogs` tracking, error handling, validation |
+| `_generate_lazy_loaded_grid_items()` | `process.py` | **117** | Wrapper #2 — near-clone of Wrapper #1, adding lazy-load flag + thread-safe deduplication with `Lock()` |
+
+**Total: 907 lines** to render a blog card. The React equivalent is **83 lines**.
+
+### 3.2 Why Couldn't You Just Write It Once?
+
+Because Sphinx's pipeline operates at the **document level**, not the **component level**. Each page is a separate `.md` file processed independently through the Docutils pipeline. There is no shared rendering context between pages.
+
+When `__init__.py` needs grid items, it must call `_generate_grid_items()` separately for each section of the page:
+
+```python
+# __init__.py — update_index_file() alone calls this 5 times:
+featured_grid_items = _generate_grid_items(rocm_blogs, featured_blogs, 6, used_blogs, skip_used=True)
+main_grid_items     = _generate_grid_items(rocm_blogs, latest_blogs, 9, used_blogs, skip_used=True)
+ecosystem_grid_items = _generate_grid_items(rocm_blogs, ecosystem_blogs, 3, used_blogs, skip_used=True)
+application_grid_items = _generate_grid_items(rocm_blogs, application_blogs, 3, used_blogs, skip_used=True)
+software_grid_items = _generate_grid_items(rocm_blogs, software_blogs, 3, used_blogs, skip_used=True)
+
+# update_vertical_pages() calls it 4 more times:
+main_grid_items     = _generate_grid_items(rocm_blogs, vertical_blogs, 9, used_blogs, skip_used=True)
+ecosystem_grid_items = _generate_grid_items(rocm_blogs, ecosystem_blogs, 3, used_blogs, skip_used=True)
+application_grid_items = _generate_grid_items(rocm_blogs, application_blogs, 3, used_blogs, skip_used=True)
+software_grid_items = _generate_grid_items(rocm_blogs, software_blogs, 3, used_blogs, skip_used=True)
+
+# update_author_files() calls it once more with different render mode:
+author_grid_items   = _generate_grid_items(rocm_blogs, author_blogs, max_items, used_blogs, use_og=True)
+
+# Category pages use a DIFFERENT function entirely:
+all_grid_items      = _generate_lazy_loaded_grid_items(rocm_blogs, category_blogs)
+```
+
+That's **12+ call sites** across 3 different functions, each threading through a `used_blogs` list to prevent duplicates. In React, this is:
+
+```tsx
+// Used everywhere — index, categories, vertical pages, author pages:
+<BlogCard post={post} />
+```
+
+### 3.3 Post-Hoc String Patching Instead of Parameterized Rendering
+
+Because the grid HTML is generated as raw strings, there is no way to parameterize image paths at render time. Instead, the code generates the HTML and then **patches it after the fact** using string replacement:
+
+```python
+# process.py — _process_category(), lines 489-498
+for grid_item in page_grid_items:
+    grid_item = grid_item.replace(":img-top: ./", ":img-top: /")
+    grid_item = grid_item.replace(":img-top: ./ecosystems", ":img-top: /ecosystems")
+    grid_item = grid_item.replace(":img-top: ./applications", ":img-top: /applications")
+    fixed_grid_items.append(grid_item)
+```
+
+This is the equivalent of `sed` on HTML output — fragile, untyped, and invisible to any static analysis. If the image path format changes, these replacements silently stop working and the images break. There are no tests to catch this.
+
+### 3.4 The Same Pattern Repeats Everywhere
+
+The grid is not the only duplicated pattern:
+
+| UI Element | Where It's Duplicated | Lines Consumed |
+|---|---|---|
+| **Blog card (grid item)** | `grid.py` + `process.py` (2 functions) + `__init__.py` (12+ calls) | **907** |
+| **Banner slide** | `banner.py` (HTML template) + `__init__.py` (`_generate_banner_slider`) + `banner-slider.html` (JS logic) + `banner-slider.css` (styling) | **757 + 528 + 269 + 671 = 2,225** |
+| **Social sharing bar** | `social-bar.html` (template, duplicated SVGs) + `process.py` (assembly via `.format()` + `.replace()`) | **60 + 82 = 142** |
+| **Pagination controls** | `process.py` (`_create_pagination_controls`) + duplicated in `__init__.py` for each page type | Multiple copies |
+| **CSS injection** | `css_content = import_file("rocm_blogs.static.css", "...")` repeated in every function that generates a page | ~15 separate reads |
+
+### 3.5 Why React Doesn't Have This Problem
+
+React's component model solves this structurally:
+
+```
+Sphinx (no components):                 React (component model):
+  
+  grid.py: generate HTML string           BlogCard.tsx: component
+  process.py: wrapper #1 (220 lines)      ↓
+  process.py: wrapper #2 (117 lines)      <BlogCard post={post} />
+  __init__.py: call 12+ times             ← used everywhere
+  process.py: patch image paths           ← props handle this
+  ────────────────────────────            ────────────────────────
+  907 lines, 3 files, fragile             83 lines, 1 file, typed
+```
+
+In React, a component receives **typed props** — the data it needs to render — and returns JSX. It doesn't care whether it's on the index page, a category page, or an author page. The framework handles rendering, diffing, and DOM updates.
+
+In Sphinx, there is no framework. Every function must:
+1. Accept the blog data (untyped dict/object)
+2. Extract the fields it needs (with `getattr` guards)
+3. Construct an HTML string (with f-string formatting)
+4. Return the string for someone else to concatenate
+5. Hope the consumer doesn't need to patch the output after the fact
+
+This is why `generate_grid()` is 570 lines for a card that React renders in 83. The other ~490 lines are all infrastructure that a component framework provides for free.
+
+---
+
+## 4. The God File: `__init__.py`
 
 The extension's entry point, `__init__.py`, is a single Python file spanning **4,667 lines** and **181 KB**. For context, the entire Linux kernel's `init/main.c` — which boots an operating system — is under 1,500 lines.
 
@@ -225,7 +331,7 @@ This one file contains:
 
 ---
 
-## 4. Mega-Functions: 500-1,300 Lines Per Function
+## 5. Mega-Functions: 500-1,300 Lines Per Function
 
 Individual functions within the monolith are themselves monolithic.
 
@@ -279,7 +385,7 @@ def _process_category(
 
 ---
 
-## 5. The Full Monolith: 12,500+ Lines Across 9 Files
+## 6. The Full Monolith: 12,500+ Lines Across 9 Files
 
 | File | Lines | Bytes | Primary Responsibility |
 |---|---|---|---|
@@ -298,7 +404,7 @@ For comparison, the **entire React platform** — which includes routing, search
 
 ---
 
-## 6. Global Mutable State
+## 7. Global Mutable State
 
 The codebase relies on **global variables** that any function can read or write at any time:
 
@@ -319,7 +425,7 @@ structured_logger = None                  # global logger instance
 
 ---
 
-## 7. Wildcard Imports: No Encapsulation
+## 8. Wildcard Imports: No Encapsulation
 
 The codebase uses `from .module import *` extensively:
 
@@ -352,7 +458,7 @@ from .utils import *
 
 ---
 
-## 8. HTML Generation via Python String Formatting
+## 9. HTML Generation via Python String Formatting
 
 The entire UI layer is generated by Python functions constructing raw HTML strings:
 
@@ -385,7 +491,7 @@ grid_content = grid_template.format(
 
 ---
 
-## 9. Tight Coupling to Sphinx Internals
+## 10. Tight Coupling to Sphinx Internals
 
 Every function takes a `Sphinx` application object and directly accesses its internal state:
 
@@ -407,7 +513,7 @@ def update_index_file(sphinx_app: Sphinx, rocm_blogs: ROCmBlogs = None):
 
 ---
 
-## 10. No Test Suite
+## 11. No Test Suite
 
 The `test/` directory contains **zero unit tests** for the core logic. There are no tests for:
 - Grid item generation
@@ -422,7 +528,7 @@ The only verification method is: run a 7-minute build, then visually inspect the
 
 ---
 
-## 11. Consequences for Development Velocity
+## 12. Consequences for Development Velocity
 
 | Activity | Time with Monolith | Time with Modular Architecture |
 |---|---|---|
@@ -436,7 +542,7 @@ The only verification method is: run a 7-minute build, then visually inspect the
 
 ---
 
-## 12. Summary: The Architecture Comparison
+## 13. Summary: The Architecture Comparison
 
 ```
 rocm-blogs-sphinx (Monolith)          React Platform (Modular)
