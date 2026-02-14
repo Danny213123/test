@@ -6,6 +6,119 @@
 
 ---
 
+## Introduction: React and Modern Web Development
+
+### What React Is
+
+React is an open-source JavaScript library for building user interfaces, created by Jordan Walke at Facebook (now Meta) in 2011 and publicly released in 2013. It introduced a component-based architecture and a declarative rendering model that fundamentally changed how web applications are built. Rather than manipulating the browser's DOM (Document Object Model) directly — a slow, error-prone process — React maintains a lightweight in-memory representation of the UI (the "virtual DOM"), computes the minimal set of changes needed when data updates, and applies only those changes to the real DOM. This reconciliation algorithm is what makes React applications feel fast even with complex, frequently-updating interfaces.
+
+React is not a full framework. It is a rendering library — deliberately narrow in scope, handling only the view layer. Routing, state management, data fetching, and build tooling are provided by the ecosystem (React Router, Redux/Zustand, TanStack Query, Vite/Webpack), giving teams architectural flexibility rather than framework lock-in. This modularity is a key reason for React's dominance: teams adopt exactly the pieces they need.
+
+### React's Position in Modern Web Development
+
+React is the most widely adopted front-end technology in professional software engineering:
+
+- **Usage**: React is used by approximately 39.5% of professional developers, making it the most popular web framework worldwide (Stack Overflow Developer Survey, 2024). Its nearest competitors — Angular (~17%) and Vue.js (~16%) — have roughly half its market share.
+- **Ecosystem**: Over 230,000 GitHub stars. The npm registry hosts 100,000+ React-related packages. The React DevTools browser extension has over 4 million weekly users.
+- **Corporate adoption**: React powers the front-end of Meta (Facebook, Instagram, WhatsApp Web), Netflix, Airbnb, Shopify, Dropbox, Discord, Notion, Linear, Figma, Stripe Dashboard, the New York Times, and the BBC. It is the default choice at the majority of Fortune 500 technology organizations.
+- **Hiring**: React is the most in-demand front-end skill in job postings globally. Choosing React means access to the largest available talent pool for front-end engineering.
+
+### Why React for a Content Platform
+
+React's component model and lifecycle system make it particularly well-suited for content delivery:
+
+- **Component-based architecture**: Each piece of the UI — a blog card, a code block with copy button, a math equation, a tabbed layout — is an isolated, reusable component. Components compose together to form pages without side effects or global state conflicts.
+- **Hooks and effects**: React's `useEffect` hook allows targeted DOM enhancement after render — the exact pattern needed for "hydrating" static HTML with interactive features (syntax highlighting, diagram rendering, scroll tracking). Each enhancement is an isolated effect, not a monolithic script.
+- **Code splitting with `React.lazy()`**: Pages and components can be loaded on demand, so users download JavaScript only for the page they're viewing — not the entire application.
+- **Virtual DOM for efficient updates**: When content changes (e.g., switching between blog posts via client-side routing), React computes the minimal DOM diff and applies it — producing instant, flicker-free page transitions without full page reloads.
+- **Server-side rendering compatibility**: React components can render to HTML strings on a server or at build time, producing pre-rendered content that search engines can index and users see immediately — without waiting for JavaScript to execute.
+- **Hot Module Replacement (HMR)**: When paired with Vite, React supports Hot Module Replacement — the ability to update a component in the browser the instant its source file is saved, without reloading the page or losing application state. For content authors, this means editing a Markdown file and seeing the rendered result in under one second, with scroll position and UI state preserved. This is a fundamentally different feedback loop from Sphinx, where every change requires a full rebuild (30 seconds to 15 minutes) followed by a manual browser refresh. HMR transforms content authoring from a batch-compile workflow into a live-editing experience.
+- **Ecosystem maturity**: Libraries for routing (React Router), search (MiniSearch), markdown rendering (Unified/remark/rehype), accessibility (Radix UI), and styling (Tailwind CSS) are production-hardened and actively maintained. The platform does not depend on niche or experimental tooling.
+
+### Vite: The Build Tool That Makes This Architecture Practical
+
+React handles rendering. But a React application needs a build tool — software that transforms source code (TypeScript, JSX, CSS) into optimized assets that browsers can execute. The choice of build tool determines how fast developers can iterate, how small production bundles are, and how much configuration the team must maintain. For this architecture, that tool is **Vite**.
+
+**What Vite is**: Vite (French for "fast," pronounced /vit/) is an open-source build tool and development server created by Evan You in 2020. You is also the creator of Vue.js, but Vite is framework-agnostic — it is now the default build tool for React, Vue, Svelte, Solid, Astro, and Qwik projects. Vite has over 70,000 GitHub stars and 14 million+ weekly npm downloads, making it the most popular JavaScript build tool by adoption velocity.
+
+**Why Vite replaced Webpack**: For over a decade, Webpack was the standard JavaScript bundler. Webpack works by analyzing every file in an application, building a complete dependency graph, and bundling everything into output files — before the developer can see anything in their browser. For large applications, this startup process takes 30–90 seconds. Every code change triggers a partial rebuild that can take 2–10 seconds.
+
+Vite takes a fundamentally different approach:
+
+- **Development: Native ES Modules + esbuild**. Instead of bundling everything upfront, Vite serves source files directly to the browser using native ES module imports (a feature supported by all modern browsers since 2018). When the browser requests a file, Vite transforms it on-demand using **esbuild** — a JavaScript/TypeScript compiler written in Go that is 10–100x faster than Webpack's JavaScript-based compiler. The result: the development server starts in under 500 milliseconds regardless of project size, because Vite only processes the files the browser actually requests.
+
+- **Hot Module Replacement (HMR)**: When a developer saves a file, Vite determines exactly which module changed, transforms only that module (via esbuild, in ~1ms), and sends a targeted update to the browser over a WebSocket connection. The browser replaces the old module with the new one — without reloading the page, without losing component state (form inputs, scroll position, expanded panels), and without re-fetching data. The update is visible in under 50 milliseconds from the moment the file is saved. For content authors editing Markdown, this means seeing the rendered result instantly — a live-preview experience comparable to Google Docs, not a compile-and-refresh workflow.
+
+- **Production: Rollup bundler**. For production builds, Vite switches to **Rollup** — a mature, battle-tested JavaScript bundler that produces highly optimized output. Rollup performs:
+  - **Tree-shaking**: Eliminates unused code. If the application imports one function from a 500-function utility library, only that one function ships to production.
+  - **Code splitting**: Automatically identifies shared code between routes and extracts it into separate chunks, preventing duplication.
+  - **Manual chunk control**: Developers can explicitly define chunk boundaries (e.g., `vendor-react` for React libraries, `vendor-utils` for utility packages) to optimize caching — a React version update invalidates only the `vendor-react` chunk, not application code.
+  - **Minification**: Compresses JavaScript and CSS, removing whitespace, shortening variable names, and eliminating dead code.
+  - **Asset hashing**: Output filenames include content hashes (e.g., `main.a3f2b1c.js`), enabling aggressive CDN caching — browsers cache files indefinitely and only re-download when content actually changes.
+
+- **Plugin system**: Vite's plugin API is compatible with Rollup's, giving access to the entire Rollup plugin ecosystem. Custom plugins can intercept requests, transform files, and inject middleware — the development server middleware that serves blog content directly from the filesystem (without a build step) is implemented as a Vite plugin.
+
+**What this means in practice**:
+
+| Metric | Webpack (Previous Generation) | Vite (Current Standard) |
+|---|---|---|
+| Dev server cold start | 30–90 seconds | **< 500 milliseconds** |
+| HMR update speed | 2–10 seconds | **< 50 milliseconds** |
+| Production build | Minutes (for large apps) | **Seconds** (Rollup + esbuild) |
+| Configuration | 200+ line `webpack.config.js` with loader chains | **< 50 line `vite.config.ts`** with sensible defaults |
+| TypeScript support | Requires `ts-loader` or `babel-loader` + config | **Built-in** — zero configuration |
+| CSS Modules / PostCSS | Requires plugin configuration | **Built-in** |
+| Environment variables | Requires `DefinePlugin` setup | **Built-in** via `.env` files |
+
+Vite is not experimental technology. It is the build tool used in production by Shopify (Hydrogen), Google (Angular CLI v17+), Nuxt, SvelteKit, Astro, Storybook, and Vitest. The React documentation itself (react.dev) recommends Vite as a starting point for new React projects. Choosing Vite means adopting the current industry standard, not betting on an emerging tool.
+
+#### How Vite Differs from Sphinx
+
+Sphinx and Vite are both "build tools" in the broadest sense — they both take source files as input and produce output files for the browser. But they are fundamentally different systems solving fundamentally different problems, and understanding the distinction is essential to understanding why this migration matters.
+
+**Sphinx is a document compiler.** It reads reStructuredText or MyST Markdown, resolves cross-references across the entire corpus, and writes out one HTML file per source document. Its mental model is a book: a table of contents, chapters, cross-references between chapters, and a single output format. Sphinx has no awareness of JavaScript, no concept of a browser runtime, no ability to optimize what the browser downloads, and no development server. Every change requires running the full compiler — `sphinx-build` — which re-reads every source file, re-resolves every reference, and re-writes every output file. The process is batch-oriented and single-threaded.
+
+**Vite is a web application build system.** It understands JavaScript modules, TypeScript, CSS, images, and JSON as first-class entities. Its mental model is a web application: routes, components, assets, and a browser that needs the smallest possible payload delivered as fast as possible. Vite's development server transforms files on-demand (only what the browser requests), and its production builder applies optimizations that Sphinx has no equivalent for.
+
+| Dimension | Sphinx | Vite |
+|---|---|---|
+| **Input** | reStructuredText / MyST Markdown | JavaScript, TypeScript, JSX, CSS, JSON, Markdown (via plugins), images |
+| **Output** | One HTML file per source document + shared CSS/JS | Optimized, hashed, code-split JavaScript and CSS bundles + static assets |
+| **Development feedback** | Run `sphinx-build` (30s–15min) → manually refresh browser | Save file → HMR update in browser in < 50ms, no refresh needed |
+| **Incremental builds** | Unreliable — cross-references can invalidate unrelated pages | Granular — only the changed module is re-transformed |
+| **Code splitting** | None — every page loads the same CSS and JS | Automatic — each route loads only its own code; shared code is extracted into common chunks |
+| **Tree-shaking** | Not applicable — Sphinx outputs HTML, not JavaScript | Eliminates unused code — if 1 function is used from a 500-function library, only that 1 function ships |
+| **Asset optimization** | None — images, fonts, and scripts are copied as-is | Content-hashed filenames for CDN caching, minification, compression, image optimization via plugins |
+| **Lazy loading** | Not possible — all assets are referenced upfront | Built-in — `React.lazy()` and dynamic `import()` load code on demand |
+| **Math rendering** | MathJax loaded on every page (~500 KB), renders client-side | KaTeX loaded conditionally (only on pages with math), or pre-rendered at build time (zero client-side cost) |
+| **Diagram support** | Requires `graphviz` system dependency + Sphinx extension | Mermaid.js loaded conditionally from CDN (only on pages with diagrams) |
+| **Search** | `searchindex.js` — basic, no fuzzy matching, no stemming | MiniSearch with fuzzy matching, stemming, synonym expansion, field boosting — all client-side |
+| **Plugin system** | Python extensions hooking into Sphinx's doctree events — tightly coupled to internal APIs, untyped, hard to test | Rollup-compatible plugin API — typed, composable, unit-testable. Access to the entire Rollup ecosystem |
+| **Language** | Python (untyped by default) | TypeScript (compile-time type safety across the entire pipeline) |
+| **Runtime dependency** | Python 3.8+, pip, virtual environment, potentially system packages (graphviz, latex) | Node.js + npm. Single runtime, single package manager, single lock file |
+| **Server requirement** | None (static HTML output), but also no interactivity | None (static file output), but with full SPA interactivity via React |
+
+**The fundamental difference**: Sphinx treats the browser as a dumb document viewer — it generates complete HTML pages and expects the browser to display them as-is. Vite treats the browser as an application runtime — it generates optimized code bundles and lets the browser load exactly what it needs, when it needs it, with interactive features that enhance the reading experience.
+
+This is not a criticism of Sphinx for what it was designed to do. Sphinx is an excellent tool for building Python documentation. But when the requirement shifts from "render a set of documents" to "deliver a high-performance, interactive content platform at scale," the architectural mismatch becomes disqualifying. Vite + React is built for exactly this problem.
+
+### The Modern Web Stack
+
+React handles the UI. Vite handles the build. The rest of the stack fills in the remaining layers. Together, they form the architecture that has become the industry standard for content-rich web applications:
+
+| Layer | Role | Why It Matters |
+|---|---|---|
+| **TypeScript** | Type-safe JavaScript superset | Catches errors at compile time, not in production. Provides autocompletion, refactoring support, and self-documenting interfaces across the entire codebase — from build scripts to UI components. |
+| **Vite** | Build tool and development server | Uses esbuild for development (sub-second Hot Module Replacement) and Rollup for production (tree-shaking, code splitting, manual chunk control). Replaces Webpack with 10–100x faster builds. Created by Evan You (creator of Vue.js), now the default build tool for React, Vue, Svelte, and Astro projects. |
+| **Node.js / npm** | Runtime and package manager | Unifies the content build pipeline, development server, and production application on a single runtime. No Python virtual environments, no `pip` dependency resolution, no system-level package conflicts. One `package.json` manages every dependency. |
+| **Unified.js** | Content processing ecosystem | An AST-based (Abstract Syntax Tree) pipeline for transforming content. `remark` parses Markdown, `rehype` processes HTML, and plugins transform content at each stage. Used by MDX, Gatsby, Docusaurus, Next.js, and Astro. Over 500 plugins available. |
+| **Tailwind CSS** | Utility-first CSS framework | Generates only the CSS classes actually used in the application (typically 10–30 KB in production, vs. 300+ KB unoptimized). Zero runtime overhead — styles are static CSS, not JavaScript-computed values. |
+| **CDN delivery** | Content distribution | The final output is static files (HTML, JSON, JS, CSS, images) deployable to any CDN — Cloudflare, AWS CloudFront, Netlify, Vercel, Azure CDN — with near-zero marginal cost per request and global edge distribution. No application server required. |
+
+This stack is not speculative. It is the dominant architecture for content-focused web applications in 2025, used by documentation platforms (Docusaurus, Nextra, Starlight), content management systems (Contentful, Sanity, Strapi front-ends), and engineering blogs (Vercel, Stripe, Cloudflare, GitHub) alike.
+
+---
+
 ## Executive Summary
 
 Sphinx is a documentation generator built in Python, originally designed for the CPython documentation in 2008. It converts reStructuredText (and, more recently, MyST Markdown) into static HTML. For single-project documentation with infrequent builds, it works. For a growing content library with 100+ articles, multiple authors, rich media, interactive elements, and a need for modern web performance — it does not.
