@@ -902,6 +902,263 @@ Once the React platform serves 100% of traffic with stable metrics, remove the S
 
 ---
 
+## Part XI: CI/CD, Preview Deployments, and Production Hosting
+
+### 11.1 The Deployment Model: Static Assets on a Global CDN
+
+The React platform's production output is a directory of static files — HTML, JavaScript, CSS, JSON, and images. There is no application server. There is no database. There is no runtime process to monitor, scale, or restart. The entire site is a folder that can be uploaded to any static hosting provider or CDN.
+
+This is a deliberate architectural choice. Static hosting is:
+
+- **Globally distributed**: CDN providers (Firebase Hosting, Cloudflare Pages, AWS CloudFront, Netlify, Vercel) replicate files to edge nodes worldwide. A user in Tokyo and a user in Berlin both receive content from the nearest edge node, not from a single origin server.
+- **Infinitely scalable**: Static files served from a CDN handle traffic spikes without provisioning, auto-scaling, or load balancer configuration. Whether the site receives 100 visits or 100,000 visits per hour, the hosting infrastructure is the same.
+- **Near-zero marginal cost**: CDN hosting is billed by bandwidth, not compute. Serving a static JSON file costs fractions of a cent per thousand requests. There are no server instances to pay for during idle hours.
+- **Inherently resilient**: There is no application process to crash, no memory leak to diagnose, no connection pool to exhaust. If the CDN is up, the site is up. Firebase Hosting, for example, provides a 99.95% uptime SLA backed by Google's infrastructure.
+
+### 11.2 Firebase Hosting: How It Works
+
+Firebase Hosting is Google's static hosting and CDN service, purpose-built for single-page applications. It is the recommended deployment target for this architecture because of three specific capabilities:
+
+**SPA Rewrite Rules**: Firebase Hosting supports a `rewrites` configuration that routes all URL requests to a single `index.html` file:
+
+```json
+{
+  "hosting": {
+    "public": "dist",
+    "rewrites": [
+      { "source": "**", "destination": "/index.html" }
+    ]
+  }
+}
+```
+
+This is essential for a React SPA with client-side routing. When a user navigates to `/blogs/artificial-intelligence/bert-fine-tuning`, the CDN serves `index.html`, React Router reads the URL, and the correct page component renders — all without a server-side routing layer. Without SPA rewrites, direct URL access and browser refreshes would return 404 errors.
+
+**Preview Channels**: Firebase Hosting supports **preview channels** — temporary, URL-addressable deployments created from any branch or pull request. Each preview channel gets a unique URL (e.g., `project-id--pr-42-abc123.web.app`) that lives for a configurable duration (default: 7 days). This enables:
+
+- Reviewers to see exactly what a pull request will look like in production, on a real URL, with real CDN behavior
+- Multiple branches deployed simultaneously without interfering with each other
+- QA testing on a production-identical environment before merging
+
+**Custom Domain Support**: Firebase Hosting supports custom domains with automatic SSL certificate provisioning via Let's Encrypt. Connecting a custom domain (e.g., `blogs.example.com`) requires adding DNS records (A and/or CNAME) — no server configuration, no certificate management, no reverse proxy setup.
+
+### 11.3 GitHub Actions: The CI/CD Pipeline
+
+Every code change flows through an automated pipeline powered by GitHub Actions. The pipeline has three stages: **validate**, **build**, and **deploy**.
+
+#### Stage 1: Validate (Every Push and Pull Request)
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Trigger: push to any branch, or pull request opened  │
+│                                                       │
+│  1. Checkout code                                     │
+│  2. Install Node.js (v20) + restore npm cache         │
+│  3. npm ci (install locked dependencies)              │
+│  4. Clone content repository (shallow, --depth 1)     │
+│  5. ESLint: lint changed files only (targeted)        │
+│  6. Prettier: format check changed files              │
+│  7. TypeScript: tsc --noEmit (type check, no output)  │
+│  8. Vitest: run test suite                            │
+│  9. npm run build (full production build)             │
+│                                                       │
+│  If ANY step fails → PR is blocked from merging       │
+└──────────────────────────────────────────────────────┘
+```
+
+**Key design decisions:**
+
+- **Shallow clone of the content repository**: The content (Markdown files, images) lives in a separate repository from the platform code. The CI pipeline clones it at `--depth 1` (latest commit only), keeping clone time under 10 seconds regardless of content history size.
+- **Targeted linting**: ESLint and Prettier run only on files changed in the current push/PR, not the entire codebase. This keeps validation fast (~10 seconds) even as the codebase grows.
+- **Full production build on every PR**: The build must succeed before merging. This catches build-time errors (broken imports, invalid TypeScript, missing assets) before they reach production.
+
+#### Stage 2: Build (On Merge to Main)
+
+When a pull request is merged to `main`, the pipeline runs the full production build:
+
+```
+npm run build
+  │
+  ├── 1. myst build --html          → Compile MyST Markdown via mystmd CLI
+  ├── 2. generate-index              → TF-IDF, PageRank, HITS, search index
+  ├── 3. prerender-blogs             → All content → HTML → JSON chunks
+  ├── 4. tsc -b                      → TypeScript compilation
+  ├── 5. vite build                  → Rollup bundling, tree-shaking, code splitting
+  └── 6. copy blog assets            → Images → dist/blogs/
+                                     │
+                                     ▼
+                              dist/ directory
+                              (complete, deployable site)
+```
+
+The output is a self-contained `dist/` directory containing everything needed to serve the site: the SPA shell (`index.html`), JavaScript bundles (code-split and hashed), CSS, JSON content chunks, search indices, and blog images.
+
+#### Stage 3: Deploy
+
+**Production deployment** (on merge to `main`):
+
+```bash
+firebase deploy --only hosting
+```
+
+This uploads the `dist/` directory to Firebase Hosting's global CDN. Deployment takes 15–30 seconds. The new version is atomically swapped — users never see a partially-deployed state. The previous version remains available for instant rollback via the Firebase console.
+
+**Preview deployments** (on pull request):
+
+```bash
+firebase hosting:channel:deploy pr-${{ github.event.pull_request.number }} --expires 7d
+```
+
+This creates a temporary preview channel with a unique URL. The URL is automatically posted as a comment on the pull request, so reviewers can click through to a live preview without checking out the branch locally.
+
+### 11.4 Branch Strategy and Preview Environments
+
+The deployment pipeline supports multiple concurrent environments without infrastructure duplication:
+
+| Branch / Event | Environment | URL | Lifetime | Purpose |
+|---|---|---|---|---|
+| `main` (push) | **Production** | `blogs.example.com` | Permanent | Live site serving all users |
+| Pull request | **Preview** | `project--pr-{number}-{hash}.web.app` | 7 days after last update | Code review, QA, stakeholder feedback |
+| `staging` branch (optional) | **Staging** | `project--staging-{hash}.web.app` | Until next deploy | Pre-production validation, integration testing |
+| Release tag (`v2025.3.15-r.1`) | **Release archive** | Accessible via Firebase version history | Indefinite | Rollback target, audit trail |
+
+**How preview deployments work in practice:**
+
+1. A developer opens a pull request that adds a new blog post or modifies the platform
+2. GitHub Actions triggers: validates, builds, and deploys to a preview channel
+3. A bot comments on the PR with the preview URL
+4. Reviewers, editors, and stakeholders visit the preview URL — they see the exact production build, on a real CDN, with real routing and real content
+5. The developer pushes additional commits; the preview channel updates automatically
+6. When the PR is merged, the preview channel is cleaned up (expires after 7 days)
+7. The main branch deploys to production
+
+This means every change is reviewable in a production-identical environment before it goes live. There is no "it works on my machine" gap between development and production. The preview URL is the production build — same build pipeline, same CDN, same routing rules.
+
+### 11.5 Versioning: Calendar Versioning (CalVer)
+
+The platform uses **Calendar Versioning** (CalVer) instead of Semantic Versioning (SemVer):
+
+```
+Format: YYYY.M.D-r.N
+Example: 2025.3.15-r.1  →  2025.3.15-r.2  →  2025.3.16-r.1
+```
+
+- `YYYY.M.D` — The date of the release
+- `r.N` — The revision number (increments if multiple releases occur on the same day)
+
+**Why CalVer for a content platform:**
+
+SemVer (1.2.3 → 1.3.0 → 2.0.0) communicates API compatibility guarantees — meaningful for libraries, meaningless for a website. CalVer communicates when the release happened — directly useful for content platforms where the question is "when was this version deployed?" not "is this a breaking change?"
+
+The versioning is fully automated: on every merge to `main`, a GitHub Actions workflow computes the next version, updates `package.json` and `CHANGELOG.md`, creates a git tag, and pushes. No human intervention. The changelog is auto-generated from commit messages, providing an audit trail of every change.
+
+### 11.6 Domain Continuity and SEO Preservation
+
+Migrating from Sphinx to the React platform changes the rendering engine, not the URL structure. But search engines (Google, Bing) have cached the old URLs, and any broken links mean lost organic traffic. This section describes how to ensure zero link breakage.
+
+#### URL Structure Mapping
+
+The platform is designed to preserve the existing URL structure exactly:
+
+| Sphinx URL | React Platform URL | Status |
+|---|---|---|
+| `/blogs/artificial-intelligence/bert-fine-tuning/` | `/blogs/artificial-intelligence/bert-fine-tuning/` | **Identical** |
+| `/blogs/high-performance-computing/openmp-guide/` | `/blogs/high-performance-computing/openmp-guide/` | **Identical** |
+| `/category/artificial-intelligence/` | `/category/artificial-intelligence/` | **Identical** |
+| `/` (homepage) | `/` | **Identical** |
+| `/search/` or `/search.html` | `/search` | Redirect (301) |
+
+Because the React platform derives URLs from the same directory structure as Sphinx (category + slug from the filesystem), the URL scheme is identical by construction — not by configuration. No redirect map is needed for standard blog URLs.
+
+#### Handling Legacy URL Patterns
+
+If Sphinx generated URLs with patterns that differ from the React platform (e.g., `.html` extensions, different query parameters), Firebase Hosting supports redirect rules:
+
+```json
+{
+  "hosting": {
+    "redirects": [
+      { "source": "/blogs/**/*.html", "destination": "/blogs/**", "type": 301 },
+      { "source": "/search.html", "destination": "/search", "type": 301 },
+      { "source": "/genindex.html", "destination": "/", "type": 301 },
+      { "source": "/_sources/**", "destination": "/", "type": 301 }
+    ]
+  }
+}
+```
+
+**301 (Permanent Redirect)** is critical here, not 302 (Temporary). A 301 tells search engines: "this content has moved permanently — transfer all ranking signals (PageRank, link equity, crawl budget) to the new URL." Google's documentation explicitly states that 301 redirects pass full link equity.
+
+#### SEO Preservation Checklist
+
+| Concern | Solution |
+|---|---|
+| **Cached URLs in Google/Bing** | URL structure is preserved identically. Legacy patterns (`.html` extensions) get 301 redirects. |
+| **Search engine indexing** | Content is pre-rendered HTML injected at first paint — crawlers see fully rendered content. Google's John Mueller has confirmed that content rendered during initial JavaScript execution is indexed at full parity with server-rendered HTML. |
+| **Open Graph / social sharing** | Meta tags (`og:title`, `og:description`, `og:image`, `twitter:card`) are set dynamically per page before the initial render completes. Social media crawlers (Facebook, Twitter/X, LinkedIn) see correct preview cards. |
+| **Canonical URLs** | Each page sets a `<link rel="canonical">` tag pointing to itself, preventing duplicate content issues if the site is accessible from multiple domains (e.g., `project.web.app` and `blogs.example.com`). |
+| **Sitemap** | A `sitemap.xml` is generated at build time from the metadata index, listing every article URL with its `lastmod` date. Submitted to Google Search Console and Bing Webmaster Tools. |
+| **robots.txt** | Standard `robots.txt` allows all crawlers, points to `sitemap.xml`, and blocks irrelevant paths (`/_build/`, `/dev/`). |
+| **Structured data (JSON-LD)** | Each blog post page includes `Article` schema markup with `headline`, `datePublished`, `author`, `description`, and `image` — enabling rich results (article cards) in Google search. |
+| **Page speed (Core Web Vitals)** | Google uses Core Web Vitals (LCP, FID, CLS) as a ranking signal. The React platform's pre-rendered content, conditional loading, and CDN delivery produce significantly better Core Web Vitals than Sphinx's unoptimized HTML output. |
+
+#### Domain Migration: Zero-Downtime Cutover
+
+The domain cutover from the old Sphinx site to the new React platform follows this sequence:
+
+```
+1. Deploy React platform to Firebase Hosting with preview URL
+   → Verify all content renders correctly
+   → Run automated visual regression tests against Sphinx output
+
+2. Configure custom domain on Firebase Hosting
+   → Firebase provisions SSL certificate automatically
+   → DNS records (A/CNAME) point to Firebase's IP addresses
+   → TTL set to 300 seconds (5 min) for fast propagation
+
+3. Submit updated sitemap.xml to Google Search Console
+   → Request indexing of updated pages
+   → Monitor "Coverage" report for crawl errors
+
+4. Monitor for 30 days:
+   → Google Search Console: crawl errors, index coverage, search performance
+   → Firebase Analytics: page views, bounce rate, session duration
+   → Core Web Vitals: LCP, FID, CLS via Chrome UX Report (CrUX)
+
+5. Decommission Sphinx build pipeline
+   → Remove Sphinx from CI/CD
+   → Archive old hosting configuration
+```
+
+**DNS propagation**: When the DNS records change, some users will see the old site and some will see the new site during propagation (typically 5–60 minutes with low TTL). Because both sites render the same content from the same Markdown files, users see identical content regardless of which version they reach during the transition. There is no "mixed state" risk.
+
+**Google recrawl timeline**: Google typically recrawls high-traffic pages within 24–48 hours of a sitemap submission. For lower-traffic pages, full recrawl may take 1–2 weeks. During this period, Google continues to serve cached results from the old site — which is fine, because the URLs and content are identical. The only difference users may notice is improved page speed once Google begins serving results that link to the React platform.
+
+### 11.7 Monitoring and Rollback
+
+**Instant rollback**: Firebase Hosting retains every deployed version. If the new deployment introduces a problem, rolling back to the previous version is a single command:
+
+```bash
+firebase hosting:rollback
+```
+
+This atomically reverts the live site to the previous deployment in under 10 seconds. No rebuild required. No redeployment. The previous `dist/` directory is already cached on the CDN.
+
+**Monitoring stack:**
+
+| Signal | Tool | What It Tells You |
+|---|---|---|
+| **Build success/failure** | GitHub Actions | Did the build pass? Did tests pass? Is the deployment healthy? |
+| **Traffic and engagement** | Firebase Analytics / Google Analytics | Page views, session duration, bounce rate, user flow |
+| **Search performance** | Google Search Console | Impressions, clicks, average position, crawl errors, index coverage |
+| **Page performance** | Chrome UX Report (CrUX) / Lighthouse CI | Core Web Vitals (LCP, FID, CLS), performance scores |
+| **Uptime** | Firebase Hosting SLA (99.95%) + UptimeRobot or Pingdom | Is the site reachable from multiple geographic locations? |
+| **Error tracking** | Browser console errors piped to Sentry or LogRocket | JavaScript errors, failed network requests, rendering failures |
+
+None of these monitoring tools require a server. They are all SaaS services or browser-native APIs that work with static hosting. The operational burden of the React platform is monitoring — not maintenance.
+
+---
+
 ## Summary
 
 This is a proposal to replace a 2008-era document compiler with a 2025-era content delivery platform. The technical case is straightforward:
